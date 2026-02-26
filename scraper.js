@@ -45,8 +45,18 @@ const formatDate = d => d.toISOString().split('T')[0];
 const sleep      = ms => new Promise(r => setTimeout(r, ms));
 
 function getTRToday() {
-    const s = new Date().toLocaleString('en-CA', { timeZone: 'Europe/Istanbul' });
-    return new Date(s.split(',')[0] + 'T00:00:00Z');
+    // Türkiye saatini alıyoruz
+    const trTime = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' }));
+    
+    // EĞER SAAT GECE 00:00 İLE 03:00 ARASINDAYSA (Flashscore henüz yeni güne geçmemiştir)
+    // Bugünü, dünün tarihi olarak kabul et!
+    if (trTime.getHours() < 3) {
+        trTime.setDate(trTime.getDate() - 1);
+    }
+    
+    // Sadece tarihi döndür
+    const s = trTime.toISOString(); 
+    return new Date(s.split('T')[0] + 'T00:00:00Z');
 }
 function getYesterday() { const d = getTRToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
 function parseTargetDate(s) { return new Date(s + 'T00:00:00Z'); }
@@ -108,21 +118,17 @@ async function navigateToDate(page, targetDate) {
     const steps = Math.abs(diff);
 
     for (let i = 0; i < steps; i++) {
-        if (i === 0) {
-            try {
-                await Promise.race([
-                    Promise.all([
-                        page.waitForResponse(r=>r.status()===200&&(r.url().includes('feed')||r.url().includes('event')),{timeout:10000}),
-                        clickArrow(page, dir)
-                    ]),
-                    sleep(6000).then(()=>clickArrow(page,dir))
-                ]);
-            } catch(_) { await clickArrow(page,dir); }
-            await sleep(3000);
-        } else {
-            await clickArrow(page,dir);
-            await sleep(800);
+        // HER ADIMDA AĞIN YANIT VERMESİNİ BEKLE (Spam tıklamayı önler, gün kaymasını çözer)
+        try {
+            await Promise.all([
+                page.waitForResponse(r => r.status() === 200 && (r.url().includes('feed') || r.url().includes('event')), {timeout: 15000}).catch(()=>null),
+                clickArrow(page, dir)
+            ]);
+        } catch(_) { 
+            await clickArrow(page, dir); 
         }
+        await sleep(2000); // 800ms çok azdı, verinin DOM'a çizilmesi için 2 saniye veriyoruz
+        log(`    🔄 Adım ${i+1}/${steps} tamamlandı.`);
     }
     await sleep(3000);
     const final = await getPageDate(page);
@@ -148,60 +154,35 @@ async function collectMatches(page, targetDate) {
     return page.evaluate((dateStr, timestamp, seasonYear) => {
 
         // ── LİG BAŞLIĞI PARSER ──────────────────────────────────────────────
-        // Log'dan öğrenilen format:
-        //   .headerLeague__wrapper içindeki text:
-        //   "Şampiyonlar Ligi - Playofflar\nAVRUPA: \nEşleşmeler"
-        //
-        //   Span yapısı (tahmin):
-        //   [span: ülke kodu/adı] [span/a: lig adı]
-        //
-        // Strateji: Tüm satırları al, BÜYÜK HARFLİ + ":" içereni ülke say,
-        //           geri kalanı lig adı say.
         function parseHeaderElement(el) {
-            // Span/a child'larını önce dene (en güvenilir)
-            const children = [...el.querySelectorAll('span, a, bdi, strong')]
-                .map(c => c.innerText?.trim())
-                .filter(Boolean);
+            // 1. En güvenilir yöntem: Flashscore'un ana class'larını kullanmak
+            const typeEl = el.querySelector('.event__title--type');
+            const nameEl = el.querySelector('.event__title--name');
 
-            if (children.length >= 2) {
-                // Genellikle: children[0]=ülke, children[1]=lig
-                return { country: children[0].replace(/:$/, '').trim(), name: children[1].trim() };
+            if (typeEl && nameEl) {
+                let country = typeEl.textContent.replace(/:/g, '').trim();
+                let name = nameEl.textContent.trim();
+                return { country, name };
             }
 
-            // Tek child veya yok → innerText'i satırlara böl
-            const lines = el.innerText
-                .split('\n')
-                .map(l => l.trim())
-                .filter(Boolean);
+            // 2. Eğer class'lar yoksa, "Puan Durumu", "Eşleşmeler" gibi linkleri DOM'dan silip kalan metni alalım
+            const titleDiv = el.querySelector('.event__title');
+            if (titleDiv) {
+                // Sekmeleri klonlayıp içinden a etiketlerini silelim ki orijinal DOM bozulmasın
+                const clone = titleDiv.cloneNode(true);
+                const tabs = clone.querySelectorAll('.event__tabs, a');
+                tabs.forEach(t => t.remove());
 
-            // Satırlardan ülke ve lig bul
-            // Ülke: tamamen büyük harf veya "ÜLKE:" formatı
-            let country = 'Unknown';
-            let name    = 'Unknown League';
-
-            for (const line of lines) {
-                const clean = line.replace(/:$/, '').trim();
-                // Büyük harf ağırlıklı ve kısa → ülke
-                const upperRatio = (clean.match(/[A-ZÜİÖÇŞĞ]/g)||[]).length / clean.length;
-                if (upperRatio > 0.5 && clean.length < 30) {
-                    country = clean;
-                } else if (clean.length > 2 && clean !== 'Eşleşmeler' && !clean.match(/^\d+$/)) {
-                    // İlk uygun satır lig adı
-                    if (name === 'Unknown League') name = clean;
+                const text = clone.textContent.trim().replace(/\s+/g, ' ');
+                // text genelde "İNGİLTERE: Premier League" şeklinde olur
+                const parts = text.split(':');
+                if (parts.length > 1) {
+                    return { country: parts[0].trim(), name: parts[1].trim() };
                 }
+                return { country: "Unknown", name: text };
             }
 
-            // Fallback: ":"  veya " - " ayırıcısı
-            if (name === 'Unknown League') {
-                const full = el.innerText.trim().replace(/\s+/g,' ');
-                const ci   = full.indexOf(':');
-                const di   = full.indexOf(' - ');
-                if (ci > -1) { country = full.slice(0,ci).trim(); name = full.slice(ci+1).trim().split('\n')[0].trim(); }
-                else if (di > -1) { country = full.slice(0,di).trim(); name = full.slice(di+3).trim().split('\n')[0].trim(); }
-                else { name = full; }
-            }
-
-            return { country, name };
+            return { country: "Unknown", name: "Unknown League" };
         }
 
         function leagueHash(n) {
@@ -209,8 +190,6 @@ async function collectMatches(page, targetDate) {
         }
 
         // ── SELECTOR ────────────────────────────────────────────────────────
-        // Log'dan öğrendik: header class = "headerLeague__wrapper"
-        // Hem bunu hem event__header'ı dene (ilerisi için güvence)
         const rows = document.querySelectorAll(
             '.headerLeague__wrapper, .event__header, [class*="headerLeague"], .event__match'
         );
