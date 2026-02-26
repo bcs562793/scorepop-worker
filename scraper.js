@@ -14,7 +14,10 @@ function logErr(...a) { const m = a.join(' '); console.error(m); logFile.write('
 process.on('uncaughtException',  e => { logErr('💥 UNCAUGHT:', e.stack||e.message); logFile.end(()=>process.exit(1)); });
 process.on('unhandledRejection', e => { logErr('💥 REJECTION:', e?.stack||e);        logFile.end(()=>process.exit(1)); });
 
-const args = Object.fromEntries(process.argv.slice(2).filter(a=>a.startsWith('--')).map(a=>a.slice(2).split('=')));
+// ─── ARGS ────────────────────────────────────────────────────────────────────
+const args = Object.fromEntries(
+    process.argv.slice(2).filter(a=>a.startsWith('--')).map(a=>a.slice(2).split('='))
+);
 const MODE      = args.mode || 'daily';
 const SINGLE    = args.date || null;
 const FROM_DATE = args.from || null;
@@ -22,94 +25,106 @@ const TO_DATE   = args.to   || null;
 
 log('🤖 ScorePop Botu Başlatılıyor...');
 log(`📋 Mod: ${MODE.toUpperCase()}${SINGLE ? ` | Tarih: ${SINGLE}` : ''}`);
+log(`🔧 Node: ${process.version}`);
 
 // ─── FİREBASE ────────────────────────────────────────────────────────────────
 function initFirebase() {
+    log('🔥 Firebase başlatılıyor...');
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
     if (!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT bulunamadı!');
-    initializeApp({ credential: cert(JSON.parse(raw)) });
-    return getFirestore();
+    const sa = JSON.parse(raw);
+    log(`   ✓ Proje: ${sa.project_id}`);
+    initializeApp({ credential: cert(sa) });
+    const db = getFirestore();
+    log('   ✓ Firestore hazır.');
+    return db;
 }
 
+// ─── YARDIMCILAR ─────────────────────────────────────────────────────────────
 const formatDate = d => d.toISOString().split('T')[0];
 const sleep      = ms => new Promise(r => setTimeout(r, ms));
 
-// 🔥 FLASHSCORE SAATİNİ HESAPLAMA 🔥
-function getFlashscoreToday() {
-    const trDateStr = new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' });
-    const trDate = new Date(trDateStr);
-    const currentHour = trDate.getHours();
-
-    if (currentHour < 4) {
-        trDate.setDate(trDate.getDate() - 1);
-    }
-    
-    const y = trDate.getFullYear();
-    const m = String(trDate.getMonth() + 1).padStart(2, '0');
-    const d = String(trDate.getDate()).padStart(2, '0');
-    
-    return new Date(`${y}-${m}-${d}T00:00:00Z`);
+function getTRToday() {
+    const s = new Date().toLocaleString('en-CA', { timeZone: 'Europe/Istanbul' });
+    return new Date(s.split(',')[0] + 'T00:00:00Z');
 }
-
-function getYesterday() { const d = getFlashscoreToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
+function getYesterday() { const d = getTRToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
 function parseTargetDate(s) { return new Date(s + 'T00:00:00Z'); }
 
-// ─── TAKVİM TIKLAMA (Ekrana çizilmeyi bekler, kaçarı yok) ──────────────────────────
+// ─── TAKVİM ──────────────────────────────────────────────────────────────────
 async function clickArrow(page, dir) {
-    // 1. ÖNCE ELEMENTİN EKRANA ÇİZİLMESİNİ BEKLE! (İşte eksiğimiz buydu)
-    const targetSel = dir === 'left' 
-        ? '.calendar__direction--yesterday, [title="Önceki gün"], [title="Previous day"]' 
-        : '.calendar__direction--tomorrow, [title="Sonraki gün"], [title="Next day"]';
-    
-    try { await page.waitForSelector(targetSel, { visible: true, timeout: 5000 }); } catch(e) {}
-
-    return await page.evaluate((dir) => {
-        // 2. Class, title veya attribute her neyse bul ve ZORLA TIKLA
-        const titleQuery = dir === 'left' ? '[title="Önceki gün"], [title="Previous day"]' : '[title="Sonraki gün"], [title="Next day"]';
-        const btnByTitle = document.querySelector(titleQuery);
-        if (btnByTitle) { btnByTitle.click(); return true; }
-
-        const kw = dir === 'left' ? ['yesterday','prev','left','önceki'] : ['tomorrow','next','right','sonraki'];
-        const elements = [...document.querySelectorAll('div, button, a, span')];
-        for (let el of elements) {
-            const c = (el.className?.toString() || '').toLowerCase();
-            if (c.includes('calendar__direction') || c.includes('calendar__navigation')) {
-                if (kw.some(k => c.includes(k))) {
-                    el.click(); return true;
-                }
-            }
-        }
+    const L = ['.calendar__direction--yesterday','.calendar__navigation--yesterday',
+               '[class*="calendar"][class*="yesterday"]','[class*="calLeft"]'];
+    const R = ['.calendar__direction--tomorrow','.calendar__navigation--tomorrow',
+               '[class*="calendar"][class*="tomorrow"]','[class*="calRight"]'];
+    for (const s of (dir==='left'?L:R)) {
+        try { await page.waitForSelector(s,{visible:true,timeout:2000}); await page.click(s); return true; } catch(_){}
+    }
+    return page.evaluate(dir => {
+        const kw = dir==='left' ? ['yesterday','prev','left'] : ['tomorrow','next','right'];
+        const el = [...document.querySelectorAll('[class*="calendar"] button,[class*="calendar"] span,[class*="calendar"] a')]
+            .find(e => { const c=(e.className?.toString()||'').toLowerCase(); return kw.some(k=>c.includes(k)); });
+        if (el) { el.click(); return true; }
+        const svgs = [...document.querySelectorAll('[class*="calendar"] svg')];
+        const idx  = dir==='left' ? 0 : svgs.length-1;
+        if (svgs[idx]) { const p=svgs[idx].closest('button,a,span,div'); if(p){p.click();return true;} }
         return false;
     }, dir);
 }
 
+async function getPageDate(page) {
+    return page.evaluate(() => {
+        for (const s of ['.calendar__static','[class*="calendar__static"]','[class*="calDate"]','[class*="calendar"] [class*="date"]']) {
+            const el = document.querySelector(s);
+            if (el?.innerText?.trim().length > 3) return el.innerText.trim();
+        }
+        const m = (window.location.hash||'').match(/(\d{4}-\d{2}-\d{2})/);
+        return m ? m[1] : null;
+    });
+}
+
 async function navigateToDate(page, targetDate) {
     const targetStr = formatDate(targetDate);
-    let current = getFlashscoreToday();
+    const rawPage   = await getPageDate(page);
+    log(`  📅 Hedef: ${targetStr} | Sayfada: ${rawPage||'okunamadı'}`);
+
+    let current = null;
+    if (rawPage) {
+        const dm = rawPage.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+        if (dm) current = new Date(`${dm[3]}-${dm[2].padStart(2,'0')}-${dm[1].padStart(2,'0')}T00:00:00Z`);
+        const im = rawPage.match(/(\d{4}-\d{2}-\d{2})/);
+        if (!current && im) current = new Date(im[1]+'T00:00:00Z');
+    }
+    if (!current) {
+        current = getTRToday();
+        log(`  ⚠️  Sayfa tarihi okunamadı, bugün varsayıldı: ${formatDate(current)}`);
+    }
 
     const diff  = Math.round((current - targetDate) / 86400000);
-    log(`  🔢 Flashscore Bugünü (${formatDate(current)}) → Hedef (${targetStr}) = ${diff} adım`);
+    log(`  🔢 ${formatDate(current)} → ${targetStr} = ${diff} adım ${diff>0?'geri':diff<0?'ileri':'(aynı)'}`);
     if (diff === 0) { log('  ✅ Zaten doğru tarih.'); return; }
 
     const dir   = diff > 0 ? 'left' : 'right';
     const steps = Math.abs(diff);
 
     for (let i = 0; i < steps; i++) {
-        const isClicked = await clickArrow(page, dir);
-        if (isClicked) {
-            try {
-                // Tıklama başarılıysa yeni günün inmesini bekle
-                await page.waitForResponse(r => r.status() === 200 && (r.url().includes('feed') || r.url().includes('event')), {timeout: 6000});
-            } catch(e) {} 
-        } else {
-            log(`  ⚠️ DİKKAT: Adım ${i+1} için Ok butonu bulunamadı!`);
+        // 🔥 BURASI DÜZELTİLDİ: Artık her tıklamada sabırla bekliyor, tıklamalar yutulmayacak 🔥
+        try {
+            await Promise.all([
+                page.waitForResponse(r=>r.status()===200&&(r.url().includes('feed')||r.url().includes('event')),{timeout:10000}).catch(()=>null),
+                clickArrow(page, dir)
+            ]);
+        } catch(_) { 
+            await clickArrow(page, dir); 
         }
-        await sleep(1500);
+        await sleep(2000); // 800ms çok hızlıydı, 2 saniye tam ideal
         log(`    🔄 Adım ${i+1}/${steps} tamamlandı.`);
     }
     
-    log('  ⏳ Hedef güne ulaşıldı, maçların tam yüklenmesi bekleniyor...');
-    await sleep(5000); // Maçlar ekrana çizilene kadar ASLA dokunma
+    log(`  ⏳ Tarihe inildi, sayfa renderlanıyor...`);
+    await sleep(4000); // 482 maçın ekrana çizilmesi için son bir soluklanma
+    const final = await getPageDate(page);
+    log(`  ✅ Navigasyon bitti. Sayfada: ${final||'?'}`);
 }
 
 // ─── MAÇLARI TOPLA ───────────────────────────────────────────────────────────
@@ -118,101 +133,125 @@ async function collectMatches(page, targetDate) {
     const timestamp  = Math.floor(targetDate.getTime() / 1000);
     const seasonYear = targetDate.getFullYear();
 
+    // Scroll → lazy-load
     await page.evaluate(async () => {
         await new Promise(r => {
-            let p=0; const t = setInterval(()=>{ window.scrollBy(0,800); p+=800;
-                if(p>=document.body.scrollHeight){clearInterval(t);r();} }, 200);
+            let p=0;
+            const t = setInterval(()=>{ window.scrollBy(0,400); p+=400;
+                if(p>=document.body.scrollHeight){clearInterval(t);r();} },150);
         });
     });
-    await sleep(2000);
+    await sleep(1500);
 
     return page.evaluate((dateStr, timestamp, seasonYear) => {
+
+        // ── LİG BAŞLIĞI PARSER ──────────────────────────────────────────────
+        function parseHeaderElement(el) {
+            // 1. En güvenilir yöntem: Flashscore'un ana class'larını kullanmak
+            const typeEl = el.querySelector('.event__title--type');
+            const nameEl = el.querySelector('.event__title--name');
+
+            if (typeEl && nameEl) {
+                let country = typeEl.textContent.replace(/:/g, '').trim();
+                let name = nameEl.textContent.trim();
+                return { country, name };
+            }
+
+            // 2. Eğer class'lar yoksa, "Puan Durumu", "Eşleşmeler" gibi linkleri DOM'dan silip kalan metni alalım
+            const titleDiv = el.querySelector('.event__title');
+            if (titleDiv) {
+                const clone = titleDiv.cloneNode(true);
+                const tabs = clone.querySelectorAll('.event__tabs, a');
+                tabs.forEach(t => t.remove());
+
+                const text = clone.textContent.trim().replace(/\s+/g, ' ');
+                const parts = text.split(':');
+                if (parts.length > 1) {
+                    return { country: parts[0].trim(), name: parts[1].trim() };
+                }
+                return { country: "Unknown", name: text };
+            }
+
+            return { country: "Unknown", name: "Unknown League" };
+        }
+
+        function leagueHash(n) {
+            let h=0; for(let i=0;i<n.length;i++) h=n.charCodeAt(i)+((h<<5)-h); return Math.abs(h);
+        }
+
+        // ── SELECTOR ────────────────────────────────────────────────────────
+        const rows = document.querySelectorAll(
+            '.headerLeague__wrapper, .event__header, [class*="headerLeague"], .event__match'
+        );
+
         const results = [];
         let league = { id:0, name:'Unknown League', country:'Unknown' };
-
-        const rows = document.querySelectorAll('.event__header, .event__match');
 
         rows.forEach(el => {
             const cls = (el.className?.toString() || '').toLowerCase();
 
-            if (cls.includes('event__header')) {
-                const typeEl = el.querySelector('.event__title--type');
-                const nameEl = el.querySelector('.event__title--name');
-
-                if (typeEl && nameEl) {
-                    league.country = typeEl.textContent.replace(/:/g, '').trim();
-                    league.name = nameEl.textContent.trim();
-                } else {
-                    const firstLine = (el.innerText || '').split('\n').map(l=>l.trim()).filter(Boolean)[0];
-                    if (firstLine) {
-                        if (firstLine.includes(':')) {
-                            const parts = firstLine.split(':');
-                            league.country = parts[0].trim();
-                            league.name = parts[1].trim();
-                        } else {
-                            league.name = firstLine;
-                            league.country = "Unknown";
-                        }
-                    }
+            // ── HEADER ──
+            const isHeader = cls.includes('headerleague') || (cls.includes('header') && !cls.includes('match'));
+            if (isHeader) {
+                const parsed = parseHeaderElement(el);
+                if (parsed.name && parsed.name !== 'Unknown League') {
+                    league = { id: leagueHash(parsed.name), name: parsed.name, country: parsed.country };
                 }
-
-                const lowerName = league.name.toLowerCase();
-                if (lowerName.includes('puan durumu') || lowerName.includes('eşleşmeler')) return;
-
-                let h=0;
-                for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
-                league.id = Math.abs(h);
                 return;
             }
 
-            if (cls.includes('event__match')) {
-                const rawText = el.innerText || el.textContent;
-                if (!rawText) return;
+            // ── MAÇ ──
+            if (!cls.includes('match')) return;
 
-                const lines = rawText.split('\n').map(l=>l.trim()).filter(Boolean);
-                if (lines.length < 5) return;
+            const lines = el.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
+            if (lines.length < 5) return;
 
-                const status = lines[0];
-                let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
+            const status = lines[0];
+            let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
 
-                if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
+            // Kırmızı kart kayması
+            if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
 
-                if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
+            if (!hs || !as_ || hs==='-' || as_==='-' ||
+                isNaN(parseInt(hs)) || isNaN(parseInt(as_)) ||
+                !isNaN(parseInt(status.charAt(0)))) return;
 
-                const h   = parseInt(hs);
-                const a   = parseInt(as_);
-                const raw = el.id ? el.id.replace('g_1_','') : '';
-                const id  = raw ? (parseInt(raw,36) || Math.floor(Math.random()*1e6)) : Math.floor(Math.random()*1e6);
+            const h   = parseInt(hs)||0;
+            const a   = parseInt(as_)||0;
+            const raw = el.id ? el.id.replace('g_1_','') : '';
+            const id  = raw
+                ? (parseInt(raw,36) || raw.split('').reduce((s,c)=>s+c.charCodeAt(0),0))
+                : Math.floor(Math.random()*1e6);
 
-                results.push({
-                    fixture: {
-                        id, referee:null, timezone:'Europe/Istanbul',
-                        date:`${dateStr}T20:00:00+03:00`, timestamp,
-                        periods:{first:null,second:null},
-                        venue:{id:null,name:null,city:null},
-                        status:{long:'Match Finished',short:'FT',elapsed:90,extra:null}
-                    },
-                    league: {
-                        id:league.id, name:league.name, country:league.country,
-                        logo:null, flag:null, season:seasonYear,
-                        round:'Regular Season', standings:false
-                    },
-                    teams: {
-                        home: { id:0, name:home, logo:null, winner: h>a ? true : (h===a ? null : false) },
-                        away: { id:0, name:away, logo:null, winner: a>h ? true : (h===a ? null : false) }
-                    },
-                    goals: { home:h, away:a },
-                    score: {
-                        halftime:  { home:null, away:null },
-                        fulltime:  { home:h,    away:a    },
-                        extratime: { home:null, away:null  },
-                        penalty:   { home:null, away:null  }
-                    }
-                });
-            }
+            results.push({
+                fixture: {
+                    id, referee:null, timezone:'Europe/Istanbul',
+                    date:`${dateStr}T20:00:00+03:00`, timestamp,
+                    periods:{first:null,second:null},
+                    venue:{id:null,name:null,city:null},
+                    status:{long:'Match Finished',short:'FT',elapsed:90,extra:null}
+                },
+                league: {
+                    id:league.id, name:league.name, country:league.country,
+                    logo:null, flag:null, season:seasonYear,
+                    round:'Regular Season', standings:false
+                },
+                teams: {
+                    home: { id:0, name:home, logo:null, winner: h>a ? true : (h===a ? null : false) },
+                    away: { id:0, name:away, logo:null, winner: a>h ? true : (h===a ? null : false) }
+                },
+                goals: { home:h, away:a },
+                score: {
+                    halftime:  { home:null, away:null },
+                    fulltime:  { home:h,    away:a    },
+                    extratime: { home:null, away:null  },
+                    penalty:   { home:null, away:null  }
+                }
+            });
         });
 
         return results;
+
     }, dateStr, timestamp, seasonYear);
 }
 
@@ -226,7 +265,7 @@ async function saveToFirestore(db, dateStr, matches) {
 
     log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}`);
     const leagues = [...new Set(matches.map(m=>`${m.league.country}: ${m.league.name}`))];
-    log(`  📋 ${leagues.length} lig kaydedildi. Örnek: ${leagues.slice(0,4).join(' | ')}`);
+    log(`  📋 ${leagues.length} lig: ${leagues.slice(0,6).join(' | ')}${leagues.length>6?` +${leagues.length-6}`:''}`);
 }
 
 // ─── TEK GÜN ─────────────────────────────────────────────────────────────────
@@ -240,7 +279,8 @@ async function processDate(page, db, targetDate) {
     if (matches.length > 0) {
         await saveToFirestore(db, dateStr, matches);
     } else {
-        log(`  ❌ Bitmiş maç yok.`);
+        const c = await page.evaluate(()=>document.querySelectorAll('.event__match').length);
+        log(`  ❌ Bitmiş maç yok. (Sayfada ${c} .event__match var)`);
     }
 }
 
@@ -248,50 +288,70 @@ async function processDate(page, db, targetDate) {
 (async () => {
     let db, browser;
 
-    try { db = initFirebase(); } catch(e) { logErr('💥 Firebase:', e.message); return; }
+    try { db = initFirebase(); }
+    catch(e) { logErr('💥 Firebase:', e.message); logFile.end(()=>process.exit(1)); return; }
 
     try {
+        log('🌍 Browser başlatılıyor...');
         browser = await puppeteer.launch({
-            headless: "new",
-            args: ['--no-sandbox','--disable-setuid-sandbox','--window-size=1920,1080'],
+            headless: true,
+            args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
+                   '--disable-gpu','--window-size=1920,1080','--disable-blink-features=AutomationControlled'],
         });
-    } catch(e) { logErr('💥 Browser:', e.message); return; }
+        log('   ✓ Browser hazır.');
+    }
+    catch(e) { logErr('💥 Browser:', e.message); logFile.end(()=>process.exit(1)); return; }
 
     const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
     await page.emulateTimezone('Europe/Istanbul');
     await page.setRequestInterception(true);
     page.on('request', r => ['image','font','media'].includes(r.resourceType()) ? r.abort() : r.continue());
 
-    try { 
-        await page.goto('https://www.flashscore.com.tr/',{waitUntil:'domcontentloaded',timeout:60000}); 
-        log('  ⏳ Sitenin arayüzü çiziliyor, bekleniyor...');
-        await sleep(5000); // 💥 İŞTE HAYAT KURTARAN YER: SİTE YÜKLENDİKTEN SONRA BUTONLARIN ÇİZİLMESİNİ BEKLE 💥
-    } catch(_) {}
+    log("🔍 Flashscore'a bağlanılıyor...");
+    try { await page.goto('https://www.flashscore.com.tr/',{waitUntil:'domcontentloaded',timeout:60000}); }
+    catch(e) { log('⚠️ Goto timeout:', e.message); }
+
+    const title = await page.title();
+    log(`📌 Sayfa: ${title}`);
+    if (title.toLowerCase().includes('just a moment')) { log('🛡️ Cloudflare, 20s...'); await sleep(20000); }
 
     try {
         await page.waitForSelector('#onetrust-accept-btn-handler',{timeout:5000});
         await page.click('#onetrust-accept-btn-handler');
         await sleep(1000);
+        log('🍪 Çerez kabul edildi.');
     } catch(_) {}
+    await sleep(2000);
 
     try {
         if (MODE==='daily') {
-            await processDate(page, db, getYesterday());
+            const y = getYesterday();
+            log(`📅 TR dün: ${formatDate(y)}`);
+            await processDate(page, db, y);
         } else if (MODE==='single') {
+            if (!SINGLE) throw new Error('--date gerekli!');
             await processDate(page, db, parseTargetDate(SINGLE));
         } else if (MODE==='backfill') {
+            if (!FROM_DATE||!TO_DATE) throw new Error('--from ve --to gerekli!');
             const start = parseTargetDate(FROM_DATE);
             const end   = parseTargetDate(TO_DATE);
             const total = Math.round((end-start)/86400000)+1;
+            log(`🗓️  ${FROM_DATE} → ${TO_DATE} (${total} gün)`);
             for (let i=0; i<total; i++) {
-                const d = new Date(start); d.setUTCDate(start.getUTCDate()+i);
+                const d = new Date(start);
+                d.setUTCDate(start.getUTCDate()+i);
                 await processDate(page, db, d);
+                if (i<total-1) await sleep(3000+Math.random()*2000);
             }
         }
     } catch(e) {
-        logErr('🔴 KRİTİK HATA:', e.message);
+        logErr('🔴 KRİTİK HATA:', e.stack||e.message);
+        await browser.close();
+        logFile.end(()=>process.exit(1)); return;
     }
 
     await browser.close();
     log('\n🏁 Tamamlandı.');
+    logFile.end(()=>process.exit(0));
 })();
