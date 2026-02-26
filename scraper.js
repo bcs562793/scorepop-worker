@@ -133,125 +133,110 @@ async function collectMatches(page, targetDate) {
     const timestamp  = Math.floor(targetDate.getTime() / 1000);
     const seasonYear = targetDate.getFullYear();
 
-    // Scroll → lazy-load
     await page.evaluate(async () => {
         await new Promise(r => {
-            let p=0;
-            const t = setInterval(()=>{ window.scrollBy(0,400); p+=400;
-                if(p>=document.body.scrollHeight){clearInterval(t);r();} },150);
+            let p=0; const t = setInterval(()=>{ window.scrollBy(0,800); p+=800;
+                if(p>=document.body.scrollHeight){clearInterval(t);r();} }, 200);
         });
     });
-    await sleep(1500);
+    await sleep(2000);
 
     return page.evaluate((dateStr, timestamp, seasonYear) => {
+        const results = [];
+        let league = { id:0, name:'Unknown League', country:'Unknown' };
 
-        // ── LİG BAŞLIĞI PARSER ──────────────────────────────────────────────
-        function parseHeaderElement(el) {
-            // 1. En güvenilir yöntem: Flashscore'un ana class'larını kullanmak
-            const typeEl = el.querySelector('.event__title--type');
-            const nameEl = el.querySelector('.event__title--name');
-
-            if (typeEl && nameEl) {
-                let country = typeEl.textContent.replace(/:/g, '').trim();
-                let name = nameEl.textContent.trim();
-                return { country, name };
-            }
-
-            // 2. Eğer class'lar yoksa, "Puan Durumu", "Eşleşmeler" gibi linkleri DOM'dan silip kalan metni alalım
-            const titleDiv = el.querySelector('.event__title');
-            if (titleDiv) {
-                const clone = titleDiv.cloneNode(true);
-                const tabs = clone.querySelectorAll('.event__tabs, a');
-                tabs.forEach(t => t.remove());
-
-                const text = clone.textContent.trim().replace(/\s+/g, ' ');
-                const parts = text.split(':');
-                if (parts.length > 1) {
-                    return { country: parts[0].trim(), name: parts[1].trim() };
-                }
-                return { country: "Unknown", name: text };
-            }
-
-            return { country: "Unknown", name: "Unknown League" };
-        }
-
-        function leagueHash(n) {
-            let h=0; for(let i=0;i<n.length;i++) h=n.charCodeAt(i)+((h<<5)-h); return Math.abs(h);
-        }
-
-        // ── SELECTOR ────────────────────────────────────────────────────────
+        // 🔥 İŞTE EKSİK OLAN KISIM BURASIYDI: Tüm olası lig başlığı class'larını ekledik 🔥
         const rows = document.querySelectorAll(
             '.headerLeague__wrapper, .event__header, [class*="headerLeague"], .event__match'
         );
 
-        const results = [];
-        let league = { id:0, name:'Unknown League', country:'Unknown' };
-
         rows.forEach(el => {
             const cls = (el.className?.toString() || '').toLowerCase();
-
-            // ── HEADER ──
             const isHeader = cls.includes('headerleague') || (cls.includes('header') && !cls.includes('match'));
+
             if (isHeader) {
-                const parsed = parseHeaderElement(el);
-                if (parsed.name && parsed.name !== 'Unknown League') {
-                    league = { id: leagueHash(parsed.name), name: parsed.name, country: parsed.country };
+                const typeEl = el.querySelector('.event__title--type') || el.querySelector('[class*="title--type"]');
+                const nameEl = el.querySelector('.event__title--name') || el.querySelector('[class*="title--name"]');
+
+                if (typeEl && nameEl) {
+                    league.country = typeEl.textContent.replace(/:/g, '').trim();
+                    league.name = nameEl.textContent.trim();
+                } else {
+                    // Puan Durumu, Eşleşmeler gibi linkleri DOM'u klonlayıp temizliyoruz
+                    const clone = el.cloneNode(true);
+                    clone.querySelectorAll('.event__tabs, a, button, [class*="tabs"]').forEach(t => t.remove());
+                    
+                    const firstLine = (clone.innerText || clone.textContent || '').split('\n').map(l=>l.trim()).filter(Boolean)[0];
+                    if (firstLine) {
+                        if (firstLine.includes(':')) {
+                            const parts = firstLine.split(':');
+                            league.country = parts[0].trim();
+                            league.name = parts[1].trim();
+                        } else {
+                            league.name = firstLine;
+                            league.country = "Unknown";
+                        }
+                    }
                 }
+
+                // Saçma sapan isimleri filtrele
+                const lowerName = league.name.toLowerCase();
+                if (lowerName.includes('puan durumu') || lowerName.includes('eşleşmeler')) return;
+
+                let h=0;
+                for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
+                league.id = Math.abs(h);
                 return;
             }
 
-            // ── MAÇ ──
-            if (!cls.includes('match')) return;
+            if (cls.includes('match')) {
+                const rawText = el.innerText || el.textContent;
+                if (!rawText) return;
 
-            const lines = el.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
-            if (lines.length < 5) return;
+                const lines = rawText.split('\n').map(l=>l.trim()).filter(Boolean);
+                if (lines.length < 5) return;
 
-            const status = lines[0];
-            let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
+                const status = lines[0];
+                let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
 
-            // Kırmızı kart kayması
-            if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
+                if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
 
-            if (!hs || !as_ || hs==='-' || as_==='-' ||
-                isNaN(parseInt(hs)) || isNaN(parseInt(as_)) ||
-                !isNaN(parseInt(status.charAt(0)))) return;
+                if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
 
-            const h   = parseInt(hs)||0;
-            const a   = parseInt(as_)||0;
-            const raw = el.id ? el.id.replace('g_1_','') : '';
-            const id  = raw
-                ? (parseInt(raw,36) || raw.split('').reduce((s,c)=>s+c.charCodeAt(0),0))
-                : Math.floor(Math.random()*1e6);
+                const h   = parseInt(hs);
+                const a   = parseInt(as_);
+                const raw = el.id ? el.id.replace('g_1_','') : '';
+                const id  = raw ? (parseInt(raw,36) || Math.floor(Math.random()*1e6)) : Math.floor(Math.random()*1e6);
 
-            results.push({
-                fixture: {
-                    id, referee:null, timezone:'Europe/Istanbul',
-                    date:`${dateStr}T20:00:00+03:00`, timestamp,
-                    periods:{first:null,second:null},
-                    venue:{id:null,name:null,city:null},
-                    status:{long:'Match Finished',short:'FT',elapsed:90,extra:null}
-                },
-                league: {
-                    id:league.id, name:league.name, country:league.country,
-                    logo:null, flag:null, season:seasonYear,
-                    round:'Regular Season', standings:false
-                },
-                teams: {
-                    home: { id:0, name:home, logo:null, winner: h>a ? true : (h===a ? null : false) },
-                    away: { id:0, name:away, logo:null, winner: a>h ? true : (h===a ? null : false) }
-                },
-                goals: { home:h, away:a },
-                score: {
-                    halftime:  { home:null, away:null },
-                    fulltime:  { home:h,    away:a    },
-                    extratime: { home:null, away:null  },
-                    penalty:   { home:null, away:null  }
-                }
-            });
+                results.push({
+                    fixture: {
+                        id, referee:null, timezone:'Europe/Istanbul',
+                        date:`${dateStr}T20:00:00+03:00`, timestamp,
+                        periods:{first:null,second:null},
+                        venue:{id:null,name:null,city:null},
+                        status:{long:'Match Finished',short:'FT',elapsed:90,extra:null}
+                    },
+                    league: {
+                        id:league.id, name:league.name, country:league.country,
+                        logo:null, flag:null, season:seasonYear,
+                        round:'Regular Season', standings:false
+                    },
+                    teams: {
+                        home: { id:0, name:home, logo:null, winner: h>a ? true : (h===a ? null : false) },
+                        away: { id:0, name:away, logo:null, winner: a>h ? true : (h===a ? null : false) }
+                    },
+                    goals: { home:h, away:a },
+                    score: {
+                        halftime:  { home:null, away:null },
+                        fulltime:  { home:h,    away:a    },
+                        extratime: { home:null, away:null  },
+                        penalty:   { home:null, away:null  }
+                    }
+                });
+            }
         });
 
         return results;
-
     }, dateStr, timestamp, seasonYear);
 }
 
