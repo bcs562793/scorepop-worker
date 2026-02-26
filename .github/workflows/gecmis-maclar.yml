@@ -18,10 +18,10 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Puppeteer Yükle
+      - name: Puppeteer ve Stealth Eklentisini Yukle
         run: |
           npm init -y
-          npm install puppeteer
+          npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
 
       - name: Botu Çalıştır ve Skorları Topla
         run: node scraper.js
