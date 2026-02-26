@@ -145,43 +145,46 @@ async function collectMatches(page, targetDate) {
         const results = [];
         let league = { id:0, name:'Unknown League', country:'Unknown' };
 
-        // 🔥 İŞTE EKSİK OLAN KISIM BURASIYDI: Tüm olası lig başlığı class'larını ekledik 🔥
-        const rows = document.querySelectorAll(
-            '.headerLeague__wrapper, .event__header, [class*="headerLeague"], .event__match'
-        );
+        // SADECE nokta atışı lig satırları ve maçlar! Wrapper yok.
+        const rows = document.querySelectorAll('.event__header, .event__match');
 
         rows.forEach(el => {
             const cls = (el.className?.toString() || '').toLowerCase();
-            const isHeader = cls.includes('headerleague') || (cls.includes('header') && !cls.includes('match'));
 
-            if (isHeader) {
-                const typeEl = el.querySelector('.event__title--type') || el.querySelector('[class*="title--type"]');
-                const nameEl = el.querySelector('.event__title--name') || el.querySelector('[class*="title--name"]');
+            // 🔥 1. CERRAHİ LİG BAŞLIĞI OPERASYONU 🔥
+            if (cls.includes('event__header')) {
+                // Sadece ve sadece asıl metinlerin olduğu yeri seç
+                const typeEl = el.querySelector('.event__title--type');
+                const nameEl = el.querySelector('.event__title--name');
 
                 if (typeEl && nameEl) {
                     league.country = typeEl.textContent.replace(/:/g, '').trim();
                     league.name = nameEl.textContent.trim();
                 } else {
-                    // Puan Durumu, Eşleşmeler gibi linkleri DOM'u klonlayıp temizliyoruz
-                    const clone = el.cloneNode(true);
-                    clone.querySelectorAll('.event__tabs, a, button, [class*="tabs"]').forEach(t => t.remove());
-                    
-                    const firstLine = (clone.innerText || clone.textContent || '').split('\n').map(l=>l.trim()).filter(Boolean)[0];
-                    if (firstLine) {
-                        if (firstLine.includes(':')) {
-                            const parts = firstLine.split(':');
+                    // Olur da class değişirse diye sadece event__title'a bak
+                    const titleEl = el.querySelector('.event__title');
+                    if (titleEl) {
+                        const text = titleEl.textContent.replace(/\s+/g, ' ').trim();
+                        const parts = text.split(':');
+                        if (parts.length > 1) {
                             league.country = parts[0].trim();
                             league.name = parts[1].trim();
                         } else {
-                            league.name = firstLine;
-                            league.country = "Unknown";
+                            league.name = text;
                         }
                     }
                 }
 
-                // Saçma sapan isimleri filtrele
-                const lowerName = league.name.toLowerCase();
-                if (lowerName.includes('puan durumu') || lowerName.includes('eşleşmeler')) return;
+                // GÜVENLİK DUVARI: Bazen menü metinleri araya sızarsa temizle
+                league.name = league.name.replace(/Puan Durumu|Eşleşmeler|Canlı/gi, '').trim();
+                league.country = league.country.replace(/Puan Durumu|Eşleşmeler|Canlı/gi, '').trim();
+
+                // Eğer yanlışlıkla çok uzun bir şey okuduysa iptal et (Ana menü okunmasını engeller)
+                if (!league.name || league.name.length > 40) {
+                    league.name = 'Unknown League';
+                    league.country = 'Unknown';
+                    return;
+                }
 
                 let h=0;
                 for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
@@ -189,7 +192,8 @@ async function collectMatches(page, targetDate) {
                 return;
             }
 
-            if (cls.includes('match')) {
+            // 🔥 2. MAÇ SATIRI 🔥
+            if (cls.includes('event__match')) {
                 const rawText = el.innerText || el.textContent;
                 if (!rawText) return;
 
