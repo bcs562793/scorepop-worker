@@ -54,20 +54,22 @@ function getFlashscoreToday() {
 function getYesterday() { const d = getFlashscoreToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
 function parseTargetDate(s) { return new Date(s + 'T00:00:00Z'); }
 
-// ─── TAKVİM TIKLAMA ──────────────────────────────────────────────────────────
+// ─── TAKVİM TIKLAMA (🔥 KUSURSUZ ZORLA TIKLAMA 🔥) ─────────────────────────
 async function clickArrow(page, dir) {
-    const L = ['.calendar__direction--yesterday','.calendar__navigation--yesterday'];
-    const R = ['.calendar__direction--tomorrow','.calendar__navigation--tomorrow'];
-    for (const s of (dir==='left'?L:R)) {
-        try { await page.waitForSelector(s,{visible:true,timeout:2000}); await page.click(s); return true; } catch(_){}
-    }
-    return page.evaluate(dir => {
-        const kw = dir==='left' ? ['yesterday','prev','left'] : ['tomorrow','next','right'];
-        const el = [...document.querySelectorAll('[class*="calendar"] button, [class*="calendar"] div[role="button"]')]
-            .find(e => { const c=(e.className?.toString()||'').toLowerCase(); return kw.some(k=>c.includes(k)); });
-        if (el) { el.click(); return true; }
+    return await page.evaluate((dir) => {
+        // 1. Doğrudan HTML elementini bul ve fareyi beklemeden İÇERİDEN ZORLA TIKLA
+        const btnClass = dir === 'left' ? '.calendar__direction--yesterday' : '.calendar__direction--tomorrow';
+        const btn = document.querySelector(btnClass);
+        if (btn) { btn.click(); return true; }
+        
+        // 2. Yedek seçici (Flashscore class ismini değiştirirse diye)
+        const fallbacks = document.querySelectorAll('[class*="calendar__direction"]');
+        if (fallbacks.length >= 2) {
+            if (dir === 'left') { fallbacks[0].click(); return true; }
+            else { fallbacks[fallbacks.length-1].click(); return true; }
+        }
         return false;
-    });
+    }, dir);
 }
 
 async function navigateToDate(page, targetDate) {
@@ -82,18 +84,21 @@ async function navigateToDate(page, targetDate) {
     const steps = Math.abs(diff);
 
     for (let i = 0; i < steps; i++) {
-        try {
-            await Promise.all([
-                page.waitForResponse(r => r.status() === 200 && (r.url().includes('feed') || r.url().includes('event')), {timeout: 8000}).catch(()=>null),
-                clickArrow(page, dir)
-            ]);
-        } catch(_) { await clickArrow(page, dir); }
+        const isClicked = await clickArrow(page, dir);
+        if (isClicked) {
+            try {
+                // Tıklama başarılıysa yeni günün inmesini bekle
+                await page.waitForResponse(r => r.status() === 200 && (r.url().includes('feed') || r.url().includes('event')), {timeout: 6000});
+            } catch(e) {} // Süre dolarsa da akışa devam et
+        } else {
+            log('  ⚠️ Ok butonu DOM içinde bulunamadı!');
+        }
         await sleep(1500);
         log(`    🔄 Adım ${i+1}/${steps} tamamlandı.`);
     }
     
     log('  ⏳ Sayfanın tam yüklenmesi bekleniyor...');
-    await sleep(5000);
+    await sleep(4000);
 }
 
 // ─── MAÇLARI TOPLA ───────────────────────────────────────────────────────────
