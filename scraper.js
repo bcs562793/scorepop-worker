@@ -34,24 +34,31 @@ function initFirebase() {
 const formatDate = d => d.toISOString().split('T')[0];
 const sleep      = ms => new Promise(r => setTimeout(r, ms));
 
-// 🔥 İŞTE SENİN TESPİTİN: FLASHSCORE SAATİNİ HESAPLAMA 🔥
+// 🔥 FLASHSCORE SAATİNİ HESAPLAMA 🔥
 function getFlashscoreToday() {
     // Gaziantep/TR saatini alıyoruz (UTC+3)
     const trDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' }));
-    
-    // Saat 03:00 veya sonrasıysa → bugünü göster
-// Saat 03:00'ten önceyse → dünü göster
-if (currentHour >= 3) {
-    // Bugünü döndür
-} else {
-    // Dünü döndür
-}
-    
-    const y = trDate.getFullYear();
-    const m = String(trDate.getMonth() + 1).padStart(2, '0');
-    const d = String(trDate.getDate()).padStart(2, '0');
-    
-    return new Date(`${y}-${m}-${d}T00:00:00Z`);
+
+    const currentHour = trDate.getHours();
+
+    // Flashscore gece 04:00'te yeni güne geçer.
+    // Eğer saat 04:00 veya daha büyükse → zaten yeni gün (bugün)
+    // Eğer saat 04:00'ten küçükse → henüz yeni güne geçmemiş (dün)
+    if (currentHour >= 4) {
+        // 04:00 ve sonrası - Flashscore bugünü gösteriyor
+        const y = trDate.getFullYear();
+        const m = String(trDate.getMonth() + 1).padStart(2, '0');
+        const d = String(trDate.getDate()).padStart(2, '0');
+        return new Date(`${y}-${m}-${d}T00:00:00Z`);
+    } else {
+        // 04:00'ten önce - Flashscore dünü gösteriyor
+        const yesterday = new Date(trDate);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const y = yesterday.getFullYear();
+        const m = String(yesterday.getMonth() + 1).padStart(2, '0');
+        const d = String(yesterday.getDate()).padStart(2, '0');
+        return new Date(`${y}-${m}-${d}T00:00:00Z`);
+    }
 }
 
 function getYesterday() { const d = getFlashscoreToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
@@ -76,7 +83,7 @@ async function clickArrow(page, dir) {
 async function navigateToDate(page, targetDate) {
     const targetStr = formatDate(targetDate);
     // Artık sayfadaki hatalı yazıyı okumaya çalışmıyoruz. Flashscore'un GERÇEK bugününü hesaplıyoruz.
-    let current = getFlashscoreToday(); 
+    let current = getFlashscoreToday();
 
     const diff  = Math.round((current - targetDate) / 86400000);
     log(`  🔢 Flashscore Bugünü (${formatDate(current)}) → Hedef (${targetStr}) = ${diff} adım`);
@@ -92,7 +99,7 @@ async function navigateToDate(page, targetDate) {
                 clickArrow(page, dir)
             ]);
         } catch(_) { await clickArrow(page, dir); }
-        await sleep(1500); 
+        await sleep(1500);
         log(`    🔄 Adım ${i+1}/${steps} tamamlandı.`);
     }
     await sleep(2000); // Maçların ekrana inmesi için son bekleme
@@ -149,8 +156,8 @@ async function collectMatches(page, targetDate) {
                 const lowerName = league.name.toLowerCase();
                 if (lowerName.includes('puan durumu') || lowerName.includes('eşleşmeler')) return;
 
-                let h=0; 
-                for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h); 
+                let h=0;
+                for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
                 league.id = Math.abs(h);
                 return;
             }
@@ -206,7 +213,7 @@ async function collectMatches(page, targetDate) {
     }, dateStr, timestamp, seasonYear);
 }
 
-// ─── FİRESTORE ───────────────────────────────────────────────────────────────
+// ─── FİRESTORE ────────────────────────────────────────────────────────────────
 async function saveToFirestore(db, dateStr, matches) {
     await db.collection('archive_matches').doc(dateStr).set({
         fixtures:      matches,
