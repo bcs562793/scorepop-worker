@@ -1,87 +1,159 @@
+/**
+ * ScorePop - Flashscore → Firestore (Api-Football Format)
+ */
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore, Timestamp } = require('firebase-admin/firestore');
+
 puppeteer.use(StealthPlugin());
 
-(async () => {
-    console.log("ScorePop Türkiye Saat Dilimi Botu Başlatılıyor...");
-    
-    const browser = await puppeteer.launch({ 
-        headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080'] 
-    });
-    
-    const page = await browser.newPage();
-    
-    // KRİTİK DÜZELTME 1: Tarayıcıyı Türkiye saat dilimine zorluyoruz! (Gün kaymalarını önler)
-    await page.emulateTimezone('Europe/Istanbul');
-    
-    console.log("Flashscore'a sızılıyor...");
-    await page.goto('https://www.flashscore.com.tr/', { waitUntil: 'networkidle2', timeout: 60000 });
+// --- Argümanları parse et ---
+const args = Object.fromEntries(
+    process.argv.slice(2).filter(a => a.startsWith('--')).map(a => a.slice(2).split('='))
+);
+const MODE = args.mode || 'daily';
+const FROM_DATE = args.from || null;
+const TO_DATE = args.to || null;
+const SINGLE = args.date || null;
 
-    try {
-        await page.waitForSelector('#onetrust-accept-btn-handler', { timeout: 5000 });
-        await page.click('#onetrust-accept-btn-handler');
-        await new Promise(r => setTimeout(r, 1000));
-    } catch(e) {}
-
-    console.log("25.02.2026 (Dün) tarihi için takvime tıklanıyor...");
-    
-    try {
-        await page.waitForSelector('.calendar__direction--yesterday', { visible: true, timeout: 10000 });
-        
-        // KRİTİK DÜZELTME 2: Tıkladıktan sonra yeni günün verisinin ağdan inmesini bekliyoruz
-        const [response] = await Promise.all([
-            // Flashscore yeni gün için 'feed' kelimesi geçen bir istek atar, bunu yakalıyoruz
-            page.waitForResponse(res => res.url().includes('feed') && res.status() === 200, { timeout: 15000 }),
-            page.click('.calendar__direction--yesterday')
-        ]);
-        
-        console.log("Takvim başarıyla değişti, 25 Şubat verileri indirildi!");
-        await new Promise(r => setTimeout(r, 3000)); // Verilerin ekrana çizilmesi (render) için ufak bir pay
-    } catch (e) {
-        console.log("UYARI: Takvim butonuna tıklanamadı veya ağ yanıtı alınamadı!", e.message);
+// --- Firebase Başlat ---
+function initFirebase() {
+    if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+        throw new Error("HATA: FIREBASE_SERVICE_ACCOUNT Secret eklenmemiş!");
     }
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    initializeApp({ credential: cert(serviceAccount) });
+    return getFirestore();
+}
 
-    console.log("25 Şubat BİTMİŞ maçları süzülüyor...");
-    const matchesData = await page.evaluate(() => {
+// --- Yardımcı Fonksiyonlar ---
+const formatDate = (d) => d.toISOString().split('T')[0];
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// --- Ana Kazıma Fonksiyonu (KIRILMAZ METOT) ---
+async function collectMatches(page, targetDate) {
+    const dateStr = formatDate(targetDate);
+    console.log(`  🔍 ${dateStr} verileri ham metin üzerinden toplanıyor...`);
+
+    return await page.evaluate((dateStr) => {
         const results = [];
         const matchElements = document.querySelectorAll('.event__match');
         
         matchElements.forEach(el => {
             const rawText = el.innerText;
-            const lines = rawText.split('\n').map(line => line.trim()).filter(line => line !== '');
+            const lines = rawText.split('\n').map(l => l.trim()).filter(l => l !== '');
             
+            // Satır yapısı: [0]Durum/Saat, [1]Ev Sahibi, [2]Deplasman, [3]Ev Skor, [4]Dep Skor
             if (lines.length >= 5) {
-                const matchStatus = lines[0];
+                const status = lines[0];
+                const homeTeam = lines[1];
+                const awayTeam = lines[2];
                 const homeScore = lines[3];
                 const awayScore = lines[4];
 
-                // FİLTRE: Sadece BİTMİŞ (MS, Bitti, Pen vb.) maçları al. 
-                // Skoru '-' olanları veya durumu saat (17:45) olanları çöpe at!
-                if (homeScore !== "-" && awayScore !== "-" && isNaN(parseInt(matchStatus.charAt(0)))) {
+                // Sadece bitmiş veya skorlu maçları al
+                if (homeScore !== "-" && !status.includes(':')) {
+                    const matchId = el.id ? el.id.replace('g_1_', '') : Math.random().toString(36).substr(2, 9);
+                    
+                    // 🔥 API-FOOTBALL FORMATINA DÖNÜŞTÜRME BURADA YAPILIYOR 🔥
                     results.push({
-                        match_status: matchStatus,
-                        home_team: lines[1],
-                        away_team: lines[2],
+                        fixture: {
+                            id: matchId,
+                            date: dateStr,
+                            status: { long: "Match Finished", short: "FT" }
+                        },
+                        teams: {
+                            home: { name: homeTeam, winner: parseInt(homeScore) > parseInt(awayScore) },
+                            away: { name: awayTeam, winner: parseInt(awayScore) > parseInt(homeScore) }
+                        },
+                        goals: {
+                            home: parseInt(homeScore),
+                            away: parseInt(awayScore)
+                        },
                         score: {
-                            home: homeScore,
-                            away: awayScore
-                        }
+                            fulltime: { home: parseInt(homeScore), away: parseInt(awayScore) }
+                        },
+                        // Uygulaman için ekstra alanlar
+                        source: "flashscore_scraper",
+                        update_at: new Date().toISOString()
                     });
                 }
             }
         });
         return results;
+    }, dateStr);
+}
+
+// --- Tarih Navigasyonu (Zaman Makinesi) ---
+async function navigateToDate(page, targetDate) {
+    await page.emulateTimezone('Europe/Istanbul');
+    console.log(`  📅 Hedef Tarih: ${formatDate(targetDate)}`);
+    
+    // Flashscore'a git
+    await page.goto('https://www.flashscore.com.tr/', { waitUntil: 'networkidle2', timeout: 60000 });
+    
+    // Çerezleri kabul et
+    try {
+        await page.waitForSelector('#onetrust-accept-btn-handler', { timeout: 5000 });
+        await page.click('#onetrust-accept-btn-handler');
+        await sleep(2000);
+    } catch(e) {}
+
+    // "Dün" butonuna tıkla (Daily mod için)
+    if (MODE === 'daily') {
+        try {
+            await page.click('.calendar__direction--yesterday');
+            await sleep(5000); // Verilerin yüklenmesi için bekle
+        } catch(e) {
+            console.log("  ⚠️ Dün butonuna basılamadı, bugün verileri çekiliyor olabilir.");
+        }
+    } 
+    // Not: Backfill modu için takvim açma mantığı eklenebilir ancak şu an Daily odaklı gidiyoruz.
+}
+
+// --- Firestore Kayıt ---
+async function saveToFirestore(db, dateStr, matches) {
+    const batch = db.batch();
+    const dateRef = db.collection('matches').doc(dateStr);
+
+    batch.set(dateRef, { lastUpdate: Timestamp.now(), count: matches.length }, { merge: true });
+
+    matches.forEach(match => {
+        const gameRef = dateRef.collection('games').doc(match.fixture.id);
+        batch.set(gameRef, match, { merge: true });
     });
 
-    console.log(`Toplam ${matchesData.length} adet 25 Şubat maçı ScorePop formatına çevrildi!`);
-    
-    if (matchesData.length > 0) {
-        console.log(JSON.stringify(matchesData, null, 2));
-    } else {
-        console.log("Hata: Dönüştürülecek 25 Şubat maçı bulunamadı.");
+    await batch.commit();
+    console.log(`  ✅ ${matches.length} maç API-FOOTBALL formatında Firestore'a yazıldı.`);
+}
+
+// --- ANA AKIŞ ---
+(async () => {
+    const db = initFirebase();
+    const browser = await puppeteer.launch({
+        headless: "new",
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080']
+    });
+    const page = await browser.newPage();
+
+    let targetDate = new Date();
+    if (MODE === 'daily') targetDate.setDate(targetDate.getDate() - 1);
+    if (MODE === 'single' && SINGLE) targetDate = new Date(SINGLE);
+
+    try {
+        await navigateToDate(page, targetDate);
+        const matches = await collectMatches(page, targetDate);
+        
+        if (matches.length > 0) {
+            await saveToFirestore(db, formatDate(targetDate), matches);
+        } else {
+            console.log("  ❌ Kaydedilecek maç bulunamadı.");
+        }
+    } catch (e) {
+        console.error("  🔴 KRİTİK HATA:", e.message);
+    } finally {
+        await browser.close();
+        process.exit();
     }
-    
-    await browser.close();
-    console.log("Operasyon başarıyla tamamlandı.");
 })();
