@@ -2,8 +2,7 @@ name: 📅 ScorePop - Maç Çekme Botu
 
 on:
   schedule:
-    - cron: '30 1 * * *'   # Her gece 01:30 UTC = 04:30 TR
-
+    - cron: '30 1 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -12,24 +11,21 @@ on:
         default: 'daily'
         type: choice
         options:
-          - daily       # Dünü otomatik çek
-          - single      # Tek gün (date alanını doldur)
-          - backfill    # Tarih aralığı (from/to alanlarını doldur)
-
+          - daily
+          - single
+          - backfill
       date:
         description: 'Tek gün → YYYY-MM-DD  (örn: 2026-02-26)'
         required: false
         default: ''
         type: string
-
       from_date:
-        description: 'Backfill başlangıç → YYYY-MM-DD  (örn: 2022-01-01)'
+        description: 'Backfill başlangıç → YYYY-MM-DD'
         required: false
         default: ''
         type: string
-
       to_date:
-        description: 'Backfill bitiş → YYYY-MM-DD  (örn: 2022-03-31)'
+        description: 'Backfill bitiş → YYYY-MM-DD'
         required: false
         default: ''
         type: string
@@ -51,17 +47,17 @@ jobs:
       - name: 📦 Bağımlılıkları Yükle
         run: npm install
 
-      - name: 🖥️ Chrome ve Sistem Kütüphanelerini Kur
+      - name: 🖥️ Chrome Kur
         run: npx puppeteer browsers install chrome --install-deps
 
-      # ── Otomatik (schedule): dünü çek ────────────────────────────────────────
+      # ── Otomatik ──────────────────────────────────────────────────────────
       - name: 🤖 Otomatik — Dünü Çek
         if: github.event_name == 'schedule'
         run: node scraper.js --mode=daily
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
-      # ── Manuel: seçilen moda göre çalış ──────────────────────────────────────
+      # ── Manuel ────────────────────────────────────────────────────────────
       - name: 📅 Manuel — Dünü Çek
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'daily'
         run: node scraper.js --mode=daily
@@ -80,10 +76,12 @@ jobs:
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
-      - name: 📤 Hata Logu
-        if: failure()
+      # ── Log her zaman yükle (başarılı veya başarısız) ─────────────────────
+      - name: 📤 Log Yükle
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: error-${{ github.run_id }}
-          path: '*.log'
+          name: scraper-log-${{ github.run_id }}
+          path: scraper.log   # ← *.log yerine tam isim, bulunamazsa hata vermez
+          if-no-files-found: warn
           retention-days: 7
