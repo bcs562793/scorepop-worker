@@ -1,14 +1,43 @@
-name: 📅 ScorePop - Günlük Maçlar Botu
+name: 📅 ScorePop - Maç Çekme Botu
 
 on:
   schedule:
-    - cron: '30 1 * * *'
+    - cron: '30 1 * * *'   # Her gece 01:30 UTC = 04:30 TR
+
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mod'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - daily       # Dünü otomatik çek
+          - single      # Tek gün (date alanını doldur)
+          - backfill    # Tarih aralığı (from/to alanlarını doldur)
+
+      date:
+        description: 'Tek gün → YYYY-MM-DD  (örn: 2026-02-26)'
+        required: false
+        default: ''
+        type: string
+
+      from_date:
+        description: 'Backfill başlangıç → YYYY-MM-DD  (örn: 2022-01-01)'
+        required: false
+        default: ''
+        type: string
+
+      to_date:
+        description: 'Backfill bitiş → YYYY-MM-DD  (örn: 2022-03-31)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
-  daily-scrape:
+  scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 350
 
     steps:
       - name: 📥 Repo Çek
@@ -18,16 +47,43 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          # cache: 'npm'  <-- BU SATIRI SİLDİK
 
       - name: 📦 Bağımlılıkları Yükle
         run: npm install
 
       - name: 🖥️ Chrome ve Sistem Kütüphanelerini Kur
-        # Puppeteer'ın kendi aracı, Ubuntu sürümüne göre eksik ne varsa kendi bulup kurar.
         run: npx puppeteer browsers install chrome --install-deps
 
-      - name: 🤖 Dünün Maçlarını Çek ve Firestore'a Yaz
+      # ── Otomatik (schedule): dünü çek ────────────────────────────────────────
+      - name: 🤖 Otomatik — Dünü Çek
+        if: github.event_name == 'schedule'
         run: node scraper.js --mode=daily
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      # ── Manuel: seçilen moda göre çalış ──────────────────────────────────────
+      - name: 📅 Manuel — Dünü Çek
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'daily'
+        run: node scraper.js --mode=daily
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: 🗓️ Manuel — Tek Gün
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'single'
+        run: node scraper.js --mode=single --date=${{ github.event.inputs.date }}
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: 🕰️ Manuel — Backfill
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'backfill'
+        run: node scraper.js --mode=backfill --from=${{ github.event.inputs.from_date }} --to=${{ github.event.inputs.to_date }}
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: 📤 Hata Logu
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-${{ github.run_id }}
+          path: '*.log'
+          retention-days: 7
