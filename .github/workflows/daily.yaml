@@ -25,12 +25,24 @@ jobs:
 
       - name: 🖥️ Chromium Sistem Kütüphaneleri
         run: |
-          sudo apt-get update -qq
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libnss3 libatk1.0-0 libatk-bridge2.0-0 libdrm2 \
-            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
-            libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 \
-            fonts-liberation libappindicator3-1 xdg-utils
+            libnss3 \
+            libatk1.0-0 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libdrm2 \
+            libxkbcommon0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libgbm1 \
+            libasound2 \
+            libpango-1.0-0 \
+            libcairo2 \
+            fonts-liberation \
+            xdg-utils
 
       - name: 🤖 Dünün Maçlarını Çek ve Firestore'a Yaz
         run: node scraper.js --mode=daily
