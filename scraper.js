@@ -3,7 +3,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 (async () => {
-    console.log("ScorePop Ham Metin Okuyucu Başlatılıyor...");
+    console.log("ScorePop Final Veri Toplayıcı Başlatılıyor...");
     
     const browser = await puppeteer.launch({ 
         headless: "new",
@@ -27,43 +27,46 @@ puppeteer.use(StealthPlugin());
             const btn = document.querySelector('.calendar__direction--yesterday') || document.querySelector('.calendar__navigation--yesterday');
             if(btn) btn.click();
         });
-        await new Promise(r => setTimeout(r, 5000)); // Verilerin inmesi için bekle
+        // Sayfanın kesinlikle yenilenmesi için bekleme süresini 8 saniyeye çıkardık
+        await new Promise(r => setTimeout(r, 8000)); 
     } catch (e) {
         console.log("UYARI: Zaman yolculuğu butonu tetiklenemedi.");
     }
 
-    console.log("Sınıf isimleri yok sayılıyor, ham metin (innerText) çekiliyor...");
+    console.log("Maçlar temiz JSON formatına dönüştürülüyor...");
     const matchesData = await page.evaluate(() => {
         const results = [];
-        // İlk başta 72 maç bulan o ana çerçeveyi (event__match) kullanıyoruz
         const matchElements = document.querySelectorAll('.event__match');
         
         matchElements.forEach(el => {
-            // Elementin içindeki TÜM metni al ve satırlara böl
             const rawText = el.innerText;
-            // Boşlukları temizle ve boş olmayan satırları bir dizi (array) yap
             const lines = rawText.split('\n').map(line => line.trim()).filter(line => line !== '');
             
-            // Eğer içinde veri varsa (en azından takım isimleri ve skorlar)
-            if (lines.length >= 4) {
+            // Eğer yeterli satır varsa (Saat/Durum, Ev Sahibi, Deplasman, Skor1, Skor2)
+            if (lines.length >= 5) {
                 results.push({
-                    rawLines: lines // Şimdilik sadece bu satırları görelim
+                    match_status: lines[0], // Örn: "MS" veya "17:45"
+                    home_team: lines[1],    // Örn: "Galatasaray"
+                    away_team: lines[2],    // Örn: "Fenerbahçe"
+                    score: {
+                        home: lines[3],     // Örn: "2" veya "-"
+                        away: lines[4]      // Örn: "1" veya "-"
+                    }
                 });
             }
         });
         return results;
     });
 
-    console.log(`Toplam ${matchesData.length} maç kutusu bulundu.`);
+    console.log(`Toplam ${matchesData.length} maç ScorePop formatına çevrildi!`);
     
     if (matchesData.length > 0) {
-        // Yapıyı çözebilmemiz için ilk 3 maçın ham halini ekrana basıyoruz
-        console.log("İLK 3 MAÇIN HAM VERİ YAPISI:");
-        console.log(JSON.stringify(matchesData.slice(0, 3), null, 2));
+        // LİMİTİ KALDIRDIK: Artık 72 maçın TAMAMINI ekrana basacak!
+        console.log(JSON.stringify(matchesData, null, 2));
     } else {
-        console.log("Hata: Maç kutuları (event__match) bulunamadı.");
+        console.log("Hata: Dönüştürülecek maç bulunamadı.");
     }
     
     await browser.close();
-    console.log("Operasyon tamamlandı.");
+    console.log("Operasyon başarıyla tamamlandı.");
 })();
