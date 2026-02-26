@@ -143,49 +143,45 @@ async function collectMatches(page, targetDate) {
 
     return page.evaluate((dateStr, timestamp, seasonYear) => {
         const results = [];
-        let league = { id: 0, name: 'Unknown League', country: 'Unknown' };
+        let league = { id:0, name:'Unknown League', country:'Unknown' };
 
-        // 🔥 KUSURSUZ SEÇİCİ: Sadece maçlar ve LİG başlıkları. Ana menüyü ASLA görmez!
-        const rows = document.querySelectorAll('.event__header, .event__match, [id^="g_1_"]');
+        // 🔥 YENİ SİSTEM: Hem headerLeague hem event__header class'larını tarar 🔥
+        const rows = document.querySelectorAll('.headerLeague, .event__header, .event__match, [id^="g_1_"]');
 
         rows.forEach(el => {
             const cls = (el.className?.toString() || '').toLowerCase();
             const id = el.id || '';
 
             const isMatch = cls.includes('match') || id.startsWith('g_1_');
-            const isHeader = !isMatch && cls.includes('header');
+            const isHeader = !isMatch && (cls.includes('headerleague') || cls.includes('event__header'));
 
             // ── LİG BAŞLIĞI İŞLEME ──
             if (isHeader) {
-                const typeEl = el.querySelector('.event__title--type');
-                const nameEl = el.querySelector('.event__title--name');
+                // SENİN GÖNDERDİĞİN HTML'DEKİ GERÇEK CLASS'LAR (Flashscore'un yeni yapısı)
+                const nameEl = el.querySelector('.headerLeague__title-text, .event__title--name');
+                const countryEl = el.querySelector('.headerLeague__category-text, .event__title--type');
 
-                if (typeEl && nameEl) {
-                    league.country = typeEl.textContent.replace(/:/g, '').trim();
+                if (nameEl) {
                     league.name = nameEl.textContent.trim();
+                    league.country = countryEl ? countryEl.textContent.replace(/:/g, '').trim() : "Unknown";
                 } else {
-                    // Eğer type veya name class'ı yoksa, sadece event__title divinin içine bak
-                    const titleEl = el.querySelector('.event__title');
-                    if (titleEl) {
-                        // Puan Durumu, Eşleşmeler gibi gereksiz butonları DOM'dan silerek sadece metni al
-                        const clone = titleEl.cloneNode(true);
-                        clone.querySelectorAll('a, button, .event__tabs, svg').forEach(e => e.remove());
-                        
-                        const lines = clone.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
-                        if (lines.length >= 2) {
-                            league.country = lines[0].replace(/:/g, '').trim();
-                            league.name = lines[1];
-                        } else if (lines.length === 1) {
-                            league.name = lines[0];
-                            league.country = "Unknown";
-                        }
-                    } else {
-                        // 🔥 İŞTE HAYAT KURTARAN YER: İçinde event__title yoksa bu lig başlığı değildir (Mesela üst menüdür). Yoksay ve atla!
-                        return;
+                    // Güvenlik Duvarı (Ne olur ne olmaz)
+                    const clone = el.cloneNode(true);
+                    clone.querySelectorAll('a, button, .event__tabs, svg, .headerLeague__actions').forEach(e => e.remove());
+                    const lines = clone.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
+                    
+                    if (lines.length >= 2) {
+                        league.country = lines[0].replace(/:/g, '').trim();
+                        league.name = lines[1];
+                    } else if (lines.length === 1) {
+                        league.name = lines[0];
+                        league.country = "Unknown";
                     }
                 }
 
-                // Lig adından ID üret (ScorePop'ta jilet gibi gruplanmasını sağlar)
+                // Lig adından ID üret
+                if (league.name === 'Unknown League' || league.name === '') return;
+                
                 let h=0;
                 for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
                 league.id = Math.abs(h);
@@ -206,7 +202,6 @@ async function collectMatches(page, targetDate) {
                 // Kırmızı kart kayması
                 if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
 
-                // Skoru olmayan veya başlamamış maçları atla
                 if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
 
                 const h   = parseInt(hs);
