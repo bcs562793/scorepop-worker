@@ -82,6 +82,7 @@ async function clickYesterdayButton(page) {
 }
 
 // ─── Maçları topla ───────────────────────────────────────────────────────────
+// ─── Maçları topla ───────────────────────────────────────────────────────────
 async function collectMatches(page, targetDate) {
     const dateStr = formatDate(targetDate);
     const timestamp = Math.floor(targetDate.getTime() / 1000);
@@ -89,94 +90,115 @@ async function collectMatches(page, targetDate) {
 
     return await page.evaluate((dateStr, timestamp, seasonYear) => {
         const results = [];
-        // KRİTİK DEĞİŞİKLİK: Sadece maçları değil, Lig Başlıklarını da seçiyoruz!
+        // Hem lig başlıklarını hem maçları yukarıdan aşağıya aynı sırayla çeken seçici
         const rows = document.querySelectorAll('.event__header, .event__match');
         
         let currentLeagueName = "Unknown League";
         let currentCountryName = "Unknown";
-        let currentLeagueId = Math.floor(Math.random() * 1000); // Geçici ID
+        let currentLeagueId = Math.floor(Math.random() * 1000);
 
         rows.forEach(el => {
-            // 1. EĞER BU SATIR BİR LİG BAŞLIĞIYSA: Hafızadaki ligi güncelle
-            if (el.classList.contains('event__header')) {
-                const countryEl = el.querySelector('.event__title--type');
-                const leagueEl = el.querySelector('.event__title--name');
-                
-                if (leagueEl) {
-                    currentLeagueName = leagueEl.innerText.trim();
-                    currentCountryName = countryEl ? countryEl.innerText.trim() : "Unknown";
-                    // Lig adından basit bir sayısal ID üretelim (Aynı liglerin ID'si aynı olsun diye)
+            try {
+                // 1. EĞER SATIR BİR LİG BAŞLIĞI İSE: Hafızadaki ligi güncelle
+                if (el.className.includes('event__header')) {
+                    // innerText yerine textContent kullanıyoruz (gizli metinleri bile affetmez)
+                    const nameEl = el.querySelector('.event__title--name');
+                    const typeEl = el.querySelector('.event__title--type');
+                    const titleEl = el.querySelector('.event__title');
+                    
+                    if (nameEl) {
+                        currentLeagueName = nameEl.textContent.trim();
+                    } else if (titleEl) {
+                        // Eğer özel class yoksa, tüm başlık kutusunu al
+                        currentLeagueName = titleEl.textContent.trim();
+                    }
+
+                    if (typeEl) {
+                        // "İNGİLTERE:" gibi gelen metinden iki noktayı temizle
+                        currentCountryName = typeEl.textContent.replace(/:/g, '').trim();
+                    }
+
+                    // İşlem başarısız olursa boş kalmasın
+                    if (!currentLeagueName || currentLeagueName === "") {
+                        currentLeagueName = "Other Matches";
+                    }
+
+                    // Her lig için benzersiz ve tutarlı bir ID oluştur (Flutter tarafında gruplama için şart)
                     let hash = 0;
                     for (let i = 0; i < currentLeagueName.length; i++) {
                         hash = currentLeagueName.charCodeAt(i) + ((hash << 5) - hash);
                     }
                     currentLeagueId = Math.abs(hash);
-                }
-            } 
-            // 2. EĞER BU SATIR BİR MAÇSA: Hafızadaki lig bilgisiyle maçı kaydet
-            else if (el.classList.contains('event__match')) {
-                const rawText = el.innerText;
-                const lines = rawText.split('\n').map(l => l.trim()).filter(l => l !== '');
-                
-                if (lines.length >= 5) {
-                    const matchStatus = lines[0];
-                    let homeTeam = lines[1];
-                    let awayTeam = lines[2];
-                    let homeScore = lines[3];
-                    let awayScore = lines[4];
+                } 
+                // 2. EĞER SATIR BİR MAÇ İSE: Hafızadaki lig bilgilerini maça yapıştır
+                else if (el.className.includes('event__match')) {
+                    // innerText çökerse textContent ile yedekli çalış
+                    const rawText = el.innerText || el.textContent;
+                    const lines = rawText.split('\n').map(l => l.trim()).filter(l => l !== '');
+                    
+                    if (lines.length >= 5) {
+                        const matchStatus = lines[0];
+                        let homeTeam = lines[1];
+                        let awayTeam = lines[2];
+                        let homeScore = lines[3];
+                        let awayScore = lines[4];
 
-                    if (!isNaN(parseInt(awayTeam))) {
-                        awayTeam = lines[3];
-                        homeScore = lines[4];
-                        awayScore = lines[5];
-                    }
+                        // Kırmızı kart/ikon kayması durumunda satırları kaydır
+                        if (!isNaN(parseInt(awayTeam))) {
+                            awayTeam = lines[3];
+                            homeScore = lines[4];
+                            awayScore = lines[5];
+                        }
 
-                    if (homeScore !== "-" && awayScore !== "-" && isNaN(parseInt(matchStatus.charAt(0)))) {
-                        const hScore = parseInt(homeScore) || 0;
-                        const aScore = parseInt(awayScore) || 0;
-                        const matchId = el.id ? parseInt(el.id.replace('g_1_', ''), 36) || Math.floor(Math.random() * 1000000) : Math.floor(Math.random() * 1000000);
-                        
-                        results.push({
-                            fixture: {
-                                id: matchId,
-                                referee: null,
-                                timezone: "Europe/Istanbul",
-                                date: `${dateStr}T20:00:00+03:00`,
-                                timestamp: timestamp,
-                                periods: { first: null, second: null },
-                                venue: { id: null, name: null, city: null },
-                                status: { long: "Match Finished", short: "FT", elapsed: 90, extra: null }
-                            },
-                            league: {
-                                id: currentLeagueId, // Artık dinamik!
-                                name: currentLeagueName, // Artık Scraped League değil, gerçek lig adı!
-                                country: currentCountryName,
-                                logo: null,
-                                flag: null,
-                                season: seasonYear,
-                                round: "Regular Season",
-                                standings: false
-                            },
-                            teams: {
-                                home: { id: 0, name: homeTeam, logo: null, winner: hScore > aScore ? true : (hScore === aScore ? null : false) },
-                                away: { id: 0, name: awayTeam, logo: null, winner: aScore > hScore ? true : (hScore === aScore ? null : false) }
-                            },
-                            goals: { home: hScore, away: aScore },
-                            score: {
-                                halftime: { home: null, away: null },
-                                fulltime: { home: hScore, away: aScore },
-                                extratime: { home: null, away: null },
-                                penalty: { home: null, away: null }
-                            }
-                        });
+                        // Sadece skoru olan ve saati yazmayan (başlamamış olmayan) maçları al
+                        if (homeScore !== "-" && awayScore !== "-" && isNaN(parseInt(matchStatus.charAt(0)))) {
+                            const hScore = parseInt(homeScore) || 0;
+                            const aScore = parseInt(awayScore) || 0;
+                            const matchId = el.id ? parseInt(el.id.replace('g_1_', ''), 36) || Math.floor(Math.random() * 1000000) : Math.floor(Math.random() * 1000000);
+                            
+                            results.push({
+                                fixture: {
+                                    id: matchId,
+                                    referee: null,
+                                    timezone: "Europe/Istanbul",
+                                    date: `${dateStr}T20:00:00+03:00`,
+                                    timestamp: timestamp,
+                                    periods: { first: null, second: null },
+                                    venue: { id: null, name: null, city: null },
+                                    status: { long: "Match Finished", short: "FT", elapsed: 90, extra: null }
+                                },
+                                league: {
+                                    id: currentLeagueId, // <-- Artık her maçın ligi buraya gelecek
+                                    name: currentLeagueName, // <-- "Süper Lig", "Premier League" vb.
+                                    country: currentCountryName,
+                                    logo: null,
+                                    flag: null,
+                                    season: seasonYear,
+                                    round: "Regular Season",
+                                    standings: false
+                                },
+                                teams: {
+                                    home: { id: 0, name: homeTeam, logo: null, winner: hScore > aScore ? true : (hScore === aScore ? null : false) },
+                                    away: { id: 0, name: awayTeam, logo: null, winner: aScore > hScore ? true : (hScore === aScore ? null : false) }
+                                },
+                                goals: { home: hScore, away: aScore },
+                                score: {
+                                    halftime: { home: null, away: null },
+                                    fulltime: { home: hScore, away: aScore },
+                                    extratime: { home: null, away: null },
+                                    penalty: { home: null, away: null }
+                                }
+                            });
+                        }
                     }
                 }
+            } catch (err) {
+                // Tek bir satırda hata çıkarsa tüm bot çökmesin, o satırı atlasın
             }
         });
         return results;
     }, dateStr, timestamp, seasonYear);
 }
-
 // ─── Firestore'a yaz ─────────────────────────────────────────────────────────
 async function saveToFirestore(db, dateStr, matches) {
     const dateRef = db.collection('archive_matches').doc(dateStr);
