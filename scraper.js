@@ -39,9 +39,13 @@ function getFlashscoreToday() {
     // Gaziantep/TR saatini alıyoruz (UTC+3)
     const trDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' }));
     
-    // Flashscore gece 04:00'te yeni güne geçer. 
-    // Mevcut saatten 4 saat çıkarırsak, gece 01:00'de çalışsa bile "Dün" olduğunu anlar!
-    trDate.setHours(trDate.getHours() - 4);
+    // Saat 03:00 veya sonrasıysa → bugünü göster
+// Saat 03:00'ten önceyse → dünü göster
+if (currentHour >= 3) {
+    // Bugünü döndür
+} else {
+    // Dünü döndür
+}
     
     const y = trDate.getFullYear();
     const m = String(trDate.getMonth() + 1).padStart(2, '0');
