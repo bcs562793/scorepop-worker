@@ -3,48 +3,60 @@ const puppeteer = require('puppeteer');
 (async () => {
     console.log("ScorePop Geçmiş Maçlar Botu başlatılıyor...");
     
-    // GitHub Actions sunucularında (Linux) sorunsuz çalışması için gerekli güvenlik argümanları
+    // Tarayıcıyı ekran boyutu belirterek açıyoruz ki mobil görünüme geçip butonları saklamasın
     const browser = await puppeteer.launch({ 
         headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080'] 
     });
     
     const page = await browser.newPage();
     
-    // Flashscore ana sayfasına gidiyoruz
-    await page.goto('https://www.flashscore.com.tr/', { waitUntil: 'networkidle2' });
+    // Sitenin bizi bot olarak algılamasını engellemek için gerçek bir Chrome kimliği veriyoruz
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Çerez (Cookie) uyarısı çıkarsa kapatıyoruz ki butonları engellemesin
+    console.log("Flashscore ana sayfasına gidiliyor...");
+    // GitHub sunucuları yavaş olabileceği için 60 saniye süre tanıyoruz
+    await page.goto('https://www.flashscore.com.tr/', { waitUntil: 'networkidle2', timeout: 60000 });
+
     try {
+        await page.waitForSelector('#onetrust-accept-btn-handler', { timeout: 5000 });
         await page.click('#onetrust-accept-btn-handler');
+        await new Promise(resolve => setTimeout(resolve, 1500));
     } catch (e) {
-        // Çerez çıkmazsa sorun yok, devam et.
+        // Çerez yoksa devam et
     }
 
-    // Dünün maçlarını görmek için "Dün" (Sol ok) butonuna tıklatıyoruz
+    console.log("Dünün maçlarına geçiliyor...");
     try {
-        await page.waitForSelector('.calendar__direction--yesterday', { timeout: 5000 });
-        await page.click('.calendar__direction--yesterday');
-        // Maçların yüklenmesi için 3 saniye bekle
-        await new Promise(resolve => setTimeout(resolve, 3000)); 
+        // "Dün" butonunun adı değişmiş olabilir, alternatifleri deniyoruz
+        await page.waitForSelector('.calendar__direction--yesterday, [title="Önceki gün"], .calendar__navigation--yesterday', { timeout: 10000 });
+        await page.click('.calendar__direction--yesterday, [title="Önceki gün"], .calendar__navigation--yesterday');
+        
+        // Tıkladıktan sonra verilerin gelmesi için 5 saniye bekle (Çok kritik!)
+        await new Promise(resolve => setTimeout(resolve, 5000)); 
     } catch (e) {
-        console.log("Dünün butonuna tıklanamadı, ana sayfadaki mevcut maçlar çekiliyor.");
+        console.log("UYARI: Dünün butonuna tıklanamadı, ana sayfadaki mevcut veriler çekiliyor.");
     }
 
     console.log("Skorlar ekrandan toplanıyor...");
     const matches = await page.evaluate(() => {
         const results = [];
-        // Maçların olduğu satırları seç
         const matchElements = document.querySelectorAll('.event__match');
         
         matchElements.forEach(el => {
-            const homeTeam = el.querySelector('.event__participant--home')?.innerText.trim() || '';
-            const awayTeam = el.querySelector('.event__participant--away')?.innerText.trim() || '';
-            const homeScore = el.querySelector('.event__score--home')?.innerText.trim() || '';
-            const awayScore = el.querySelector('.event__score--away')?.innerText.trim() || '';
+            // Sınıf isimlerinin tamamı yerine sadece "içinde geçen" kelimeleri arıyoruz (Daha güvenli)
+            const homeTeamEl = el.querySelector('[class*="participant--home"]');
+            const awayTeamEl = el.querySelector('[class*="participant--away"]');
+            const homeScoreEl = el.querySelector('[class*="score--home"]');
+            const awayScoreEl = el.querySelector('[class*="score--away"]');
             
-            // Eğer skor boş değilse (maç oynanmış ve bitmişse) listeye ekle
-            if(homeScore !== '') {
+            const homeTeam = homeTeamEl ? homeTeamEl.innerText.trim() : '';
+            const awayTeam = awayTeamEl ? awayTeamEl.innerText.trim() : '';
+            const homeScore = homeScoreEl ? homeScoreEl.innerText.trim() : '';
+            const awayScore = awayScoreEl ? awayScoreEl.innerText.trim() : '';
+            
+            // Eğer takım isimleri boş değilse listeye ekle
+            if(homeTeam !== '' && awayTeam !== '') {
                 results.push({ 
                     homeTeam, 
                     awayTeam, 
@@ -56,11 +68,13 @@ const puppeteer = require('puppeteer');
     });
 
     console.log(`Toplam ${matches.length} maç sonucu başarıyla çekildi.`);
-    console.log(JSON.stringify(matches.slice(0, 5), null, 2)); // Örnek olarak terminale ilk 5 maçı yazdırır
     
-    // BURAYA EKLEME YAPILACAK: 
-    // İleride matches dizisini veritabanına (Firebase, Supabase vb.) kaydedecek kod buraya gelecek.
-
+    if (matches.length > 0) {
+        console.log(JSON.stringify(matches.slice(0, 15), null, 2)); // İlk 15 maçı göster
+    } else {
+        console.log("Hata: Takım isimleri okunamadı. Flashscore tasarımı değiştirmiş olabilir.");
+    }
+    
     await browser.close();
     console.log("Görev tamamlandı, bot uykuya geçiyor.");
 })();
