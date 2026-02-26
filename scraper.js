@@ -1,46 +1,32 @@
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { initializeApp, cert } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
-
-puppeteer.use(StealthPlugin());
-
-// Argümanları al (--mode=daily veya --mode=backfill)
-const args = Object.fromEntries(
-    process.argv.slice(2).filter(a => a.startsWith('--')).map(a => a.slice(2).split('='))
-);
-const MODE = args.mode || 'daily';
-
-function initFirebase() {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    initializeApp({ credential: cert(serviceAccount) });
-    return getFirestore();
-}
-
-const formatDate = (d) => d.toISOString().split('T')[0];
-
-async function scrapeFlashscore(page, targetDate) {
+async function collectMatches(page, targetDate) {
     const dateStr = formatDate(targetDate);
     const timestamp = Math.floor(targetDate.getTime() / 1000);
 
     return await page.evaluate((dateStr, timestamp) => {
         const results = [];
+        // Flashscore'daki TÜM maç satırlarını yakala
         const matchElements = document.querySelectorAll('.event__match');
         
         matchElements.forEach(el => {
-            const lines = el.innerText.split('\n').map(l => l.trim()).filter(l => l !== '');
-            // [0]Durum/Saat, [1]Ev, [2]Dep, [3]Ev Skor, [4]Dep Skor (Veya tam tersi yapı)
-            
-            if (lines.length >= 5) {
-                const homeTeam = lines[1];
-                const awayTeam = lines[2];
-                const hScore = parseInt(lines[3]);
-                const aScore = parseInt(lines[4]);
+            // Satır saymak yerine doğrudan HTML class'larına bakıyoruz
+            const homeTeamEl = el.querySelector('.event__participant--home');
+            const awayTeamEl = el.querySelector('.event__participant--away');
+            const homeScoreEl = el.querySelector('.event__score--home');
+            const awayScoreEl = el.querySelector('.event__score--away');
 
-                if (!isNaN(hScore)) {
-                    const matchId = el.id ? parseInt(el.id.replace('g_1_', '')) : Math.floor(Math.random() * 1000000);
+            // Eğer takım isimleri ve skorlar ekranda tam olarak varsa işlemi yap
+            if (homeTeamEl && awayTeamEl && homeScoreEl && awayScoreEl) {
+                const homeTeam = homeTeamEl.innerText.trim();
+                const awayTeam = awayTeamEl.innerText.trim();
+                const hScore = parseInt(homeScoreEl.innerText.trim());
+                const aScore = parseInt(awayScoreEl.innerText.trim());
+
+                // Skor alanında rakam yazıyorsa (yani maç oynanmışsa/oynanıyorsa) listeye ekle
+                if (!isNaN(hScore) && !isNaN(aScore)) {
+                    // Flashscore ID'sini al, yoksa benzersiz bir sayı üret
+                    const matchId = el.id ? parseInt(el.id.replace('g_1_', ''), 36) || Math.floor(Math.random() * 1000000) : Math.floor(Math.random() * 1000000);
                     
-                    // 🔥 SCOREPOP TAM UYUMLU JSON YAPISI 🔥
+                    // 🔥 SCOREPOP API-FOOTBALL V3 ŞEMASI 🔥
                     results.push({
                         fixture: {
                             id: matchId,
@@ -80,45 +66,3 @@ async function scrapeFlashscore(page, targetDate) {
         return results;
     }, dateStr, timestamp);
 }
-
-(async () => {
-    const db = initFirebase();
-    const browser = await puppeteer.launch({
-        headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-    const page = await browser.newPage();
-
-    let targetDate = new Date();
-    if (MODE === 'daily') targetDate.setDate(targetDate.getDate() - 1);
-
-    const dateStr = formatDate(targetDate);
-    console.log(`📅 İşlem Tarihi: ${dateStr}`);
-
-    try {
-        await page.goto('https://www.flashscore.com.tr/', { waitUntil: 'networkidle2' });
-        
-        // "Dün" butonuna bas ve verileri çek
-        try {
-            await page.waitForSelector('.calendar__direction--yesterday', { timeout: 5000 });
-            await page.click('.calendar__direction--yesterday');
-            await new Promise(r => setTimeout(r, 5000));
-        } catch(e) { console.log("⚠️ Tarih navigasyonu yapılamadı."); }
-
-        const fixtures = await scrapeFlashscore(page, targetDate);
-
-        if (fixtures.length > 0) {
-            // 🔥 SCOREPOP KRİTİK NOKTA: archive_matches içinde 'fixtures' array'i olarak yaz 🔥
-            await db.collection('archive_matches').doc(dateStr).set({
-                fixtures: fixtures,
-                last_updated: new Date().toISOString()
-            });
-            console.log(`✅ ${fixtures.length} maç başarıyla ScorePop formatında kaydedildi!`);
-        }
-    } catch (e) {
-        console.error("🔴 HATA:", e.message);
-    } finally {
-        await browser.close();
-        process.exit();
-    }
-})();
