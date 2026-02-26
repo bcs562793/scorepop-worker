@@ -36,29 +36,19 @@ const sleep      = ms => new Promise(r => setTimeout(r, ms));
 
 // 🔥 FLASHSCORE SAATİNİ HESAPLAMA 🔥
 function getFlashscoreToday() {
-    // Gaziantep/TR saatini alıyoruz (UTC+3)
-    const trDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' }));
-
+    const trDateStr = new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' });
+    const trDate = new Date(trDateStr);
     const currentHour = trDate.getHours();
 
-    // Flashscore gece 04:00'te yeni güne geçer.
-    // Eğer saat 04:00 veya daha büyükse → zaten yeni gün (bugün)
-    // Eğer saat 04:00'ten küçükse → henüz yeni güne geçmemiş (dün)
-    if (currentHour >= 4) {
-        // 04:00 ve sonrası - Flashscore bugünü gösteriyor
-        const y = trDate.getFullYear();
-        const m = String(trDate.getMonth() + 1).padStart(2, '0');
-        const d = String(trDate.getDate()).padStart(2, '0');
-        return new Date(`${y}-${m}-${d}T00:00:00Z`);
-    } else {
-        // 04:00'ten önce - Flashscore dünü gösteriyor
-        const yesterday = new Date(trDate);
-        yesterday.setDate(yesterday.getDate() - 1);
-        const y = yesterday.getFullYear();
-        const m = String(yesterday.getMonth() + 1).padStart(2, '0');
-        const d = String(yesterday.getDate()).padStart(2, '0');
-        return new Date(`${y}-${m}-${d}T00:00:00Z`);
+    if (currentHour < 4) {
+        trDate.setDate(trDate.getDate() - 1);
     }
+    
+    const y = trDate.getFullYear();
+    const m = String(trDate.getMonth() + 1).padStart(2, '0');
+    const d = String(trDate.getDate()).padStart(2, '0');
+    
+    return new Date(`${y}-${m}-${d}T00:00:00Z`);
 }
 
 function getYesterday() { const d = getFlashscoreToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
@@ -94,7 +84,7 @@ async function navigateToDate(page, targetDate) {
     for (let i = 0; i < steps; i++) {
         try {
             await Promise.all([
-                page.waitForResponse(r => r.status() === 200 && (r.url().includes('feed') || r.url().includes('event')), {timeout: 10000}).catch(()=>null),
+                page.waitForResponse(r => r.status() === 200 && (r.url().includes('feed') || r.url().includes('event')), {timeout: 8000}).catch(()=>null),
                 clickArrow(page, dir)
             ]);
         } catch(_) { await clickArrow(page, dir); }
@@ -102,9 +92,8 @@ async function navigateToDate(page, targetDate) {
         log(`    🔄 Adım ${i+1}/${steps} tamamlandı.`);
     }
     
-    // 🔥 KRİTİK DEĞİŞİKLİK: Hedef güne geldikten sonra maçların yüklenmesi için CİDDİ bir bekleme 🔥
     log('  ⏳ Sayfanın tam yüklenmesi bekleniyor...');
-    await sleep(5000); 
+    await sleep(5000);
 }
 
 // ─── MAÇLARI TOPLA ───────────────────────────────────────────────────────────
@@ -113,26 +102,23 @@ async function collectMatches(page, targetDate) {
     const timestamp  = Math.floor(targetDate.getTime() / 1000);
     const seasonYear = targetDate.getFullYear();
 
-    // Aşağı kaydırarak gizli maçları yükle (Sürenin biraz uzaması gerekiyor ki Flashscore yetişsin)
     await page.evaluate(async () => {
         await new Promise(r => {
             let p=0; const t = setInterval(()=>{ window.scrollBy(0,800); p+=800;
                 if(p>=document.body.scrollHeight){clearInterval(t);r();} }, 200);
         });
     });
-    await sleep(2000); // Scroll sonrası son render beklemesi
+    await sleep(2000);
 
     return page.evaluate((dateStr, timestamp, seasonYear) => {
         const results = [];
         let league = { id:0, name:'Unknown League', country:'Unknown' };
 
-        // Sadece lig başlıkları ve maçları seçiyoruz
         const rows = document.querySelectorAll('.event__header, .event__match');
 
         rows.forEach(el => {
             const cls = (el.className?.toString() || '').toLowerCase();
 
-            // 🔥 1. LİG BAŞLIĞI PARÇALAYICI 🔥
             if (cls.includes('event__header')) {
                 const typeEl = el.querySelector('.event__title--type');
                 const nameEl = el.querySelector('.event__title--name');
@@ -163,23 +149,18 @@ async function collectMatches(page, targetDate) {
                 return;
             }
 
-            // 🔥 2. MAÇ SATIRI 🔥
-            // event__match class'ına tam olarak sahip değilse (mesela sadece reklamsa) atla
             if (cls.includes('event__match')) {
                 const rawText = el.innerText || el.textContent;
                 if (!rawText) return;
 
                 const lines = rawText.split('\n').map(l=>l.trim()).filter(Boolean);
-                // Bir maç satırında en az Durum, Ev Sahibi, Deplasman, Ev Skor, Dep Skor olmalı (5 satır)
                 if (lines.length < 5) return;
 
                 const status = lines[0];
                 let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
 
-                // Kırmızı kart kayması
                 if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
 
-                // Veri doğrulama: Skoru çizgi (-) olanları veya durumu sayı (saat) ile başlayanları ATLA
                 if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
 
                 const h   = parseInt(hs);
@@ -219,68 +200,7 @@ async function collectMatches(page, targetDate) {
     }, dateStr, timestamp, seasonYear);
 }
 
-                // Eşleşmeler, Puan durumu gibi sekmelerin lig sanılmasını engelle!
-                const lowerName = league.name.toLowerCase();
-                if (lowerName.includes('puan durumu') || lowerName.includes('eşleşmeler')) return;
-
-                let h=0;
-                for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
-                league.id = Math.abs(h);
-                return;
-            }
-
-            // 🔥 2. MAÇ SATIRI 🔥
-            if (cls.includes('event__match')) {
-                const lines = (el.innerText || el.textContent).split('\n').map(l=>l.trim()).filter(Boolean);
-                if (lines.length < 5) return;
-
-                const status = lines[0];
-                let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
-
-                // Kırmızı kart kayması düzeltmesi
-                if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
-
-                // Başlamamış (saati yazan) veya skoru belirsiz maçları ÇÖPE AT
-                if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
-
-                const h   = parseInt(hs);
-                const a   = parseInt(as_);
-                const raw = el.id ? el.id.replace('g_1_','') : '';
-                const id  = raw ? (parseInt(raw,36) || Math.floor(Math.random()*1e6)) : Math.floor(Math.random()*1e6);
-
-                results.push({
-                    fixture: {
-                        id, referee:null, timezone:'Europe/Istanbul',
-                        date:`${dateStr}T20:00:00+03:00`, timestamp,
-                        periods:{first:null,second:null},
-                        venue:{id:null,name:null,city:null},
-                        status:{long:'Match Finished',short:'FT',elapsed:90,extra:null}
-                    },
-                    league: {
-                        id:league.id, name:league.name, country:league.country,
-                        logo:null, flag:null, season:seasonYear,
-                        round:'Regular Season', standings:false
-                    },
-                    teams: {
-                        home: { id:0, name:home, logo:null, winner: h>a ? true : (h===a ? null : false) },
-                        away: { id:0, name:away, logo:null, winner: a>h ? true : (h===a ? null : false) }
-                    },
-                    goals: { home:h, away:a },
-                    score: {
-                        halftime:  { home:null, away:null },
-                        fulltime:  { home:h,    away:a    },
-                        extratime: { home:null, away:null  },
-                        penalty:   { home:null, away:null  }
-                    }
-                });
-            }
-        });
-
-        return results;
-    }, dateStr, timestamp, seasonYear);
-}
-
-// ─── FİRESTORE ────────────────────────────────────────────────────────────────
+// ─── FİRESTORE ───────────────────────────────────────────────────────────────
 async function saveToFirestore(db, dateStr, matches) {
     await db.collection('archive_matches').doc(dateStr).set({
         fixtures:      matches,
