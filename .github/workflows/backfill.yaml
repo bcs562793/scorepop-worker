@@ -1,18 +1,18 @@
-name: 🕰️ ScorePop - Geçmiş Veri Yükleme (Backfill)
+name: 🕰️ ScorePop – Geçmiş Veri Yükleme (Backfill)
 
 on:
   workflow_dispatch:
     inputs:
       from_date:
-        description: 'Başlangıç tarihi (YYYY-MM-DD) – örn: 2026-01-01'
+        description: 'Başlangıç tarihi (YYYY-MM-DD)'
         required: true
         type: string
       to_date:
-        description: 'Bitiş tarihi (YYYY-MM-DD) – örn: 2026-01-31'
+        description: 'Bitiş tarihi (YYYY-MM-DD)'
         required: true
         type: string
       force_rescrape:
-        description: 'Zaten çekilmiş günleri tekrar çekip üstüne yazsın mı?'
+        description: 'Zaten çekilmiş günleri tekrar çek?'
         required: false
         default: 'false'
         type: choice
@@ -23,31 +23,26 @@ on:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 350  # Max ~6 saat (GitHub Actions limiti)
+    timeout-minutes: 350
 
     steps:
-      - name: 📥 Repo Çek
+      - name: 📥 Repo çek
         uses: actions/checkout@v4
 
-      - name: 🟢 Node.js 20 Kur
+      - name: 🟢 Node.js 20 kur
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+          # cache: 'npm' <-- Kilit dosyası olmadığı için bunu sildik
 
-      - name: 📦 Bağımlılıkları Yükle
-        run: npm ci
+      - name: 📦 Bağımlılıkları yükle
+        run: npm install  # <-- npm ci yerine install kullanıyoruz
 
-      - name: 🖥️ Chromium Sistem Kütüphaneleri
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libnss3 libatk1.0-0 libatk-bridge2.0-0 libdrm2 \
-            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
-            libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 \
-            fonts-liberation libappindicator3-1 xdg-utils
+      - name: 🖥️ Chrome ve Sistem Kütüphanelerini Kur
+        # Exit Code 100 hatasını almamak için en güvenli yöntem budur
+        run: npx puppeteer browsers install chrome --install-deps
 
-      - name: 🕰️ Backfill (Zaman Makinesi) Çalıştır
+      - name: 🕰️ Backfill çalıştır
         run: |
           node scraper.js \
             --mode=backfill \
@@ -57,11 +52,7 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FORCE_RESCRAPE: ${{ github.event.inputs.force_rescrape }}
 
-      - name: 📊 Özet Raporu Göster
-        if: always()
-        run: echo "Backfill tamamlandı → ${{ github.event.inputs.from_date }} ile ${{ github.event.inputs.to_date }} arası"
-
-      - name: 📤 Log Kaydet
+      - name: 📤 Log kaydet
         if: always()
         uses: actions/upload-artifact@v4
         with:
