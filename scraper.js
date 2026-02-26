@@ -32,7 +32,7 @@ async function collectMatches(page, targetDate) {
         const matchElements = document.querySelectorAll('.event__match');
         
         matchElements.forEach(el => {
-            // İŞTE ÇALIŞAN ESKİ MANTIK: Doğrudan metni satır satır bölüyoruz
+            // SENİN İSTEDİĞİN VE ÇALIŞAN ESKİ MANTIK
             const rawText = el.innerText;
             const lines = rawText.split('\n').map(l => l.trim()).filter(l => l !== '');
             
@@ -43,22 +43,20 @@ async function collectMatches(page, targetDate) {
                 let homeScore = lines[3];
                 let awayScore = lines[4];
 
-                // Kırmızı kart veya kart simgesi araya girerse satırlar kayar, onu düzeltiyoruz
+                // Araya kırmızı kart veya ikon girerse satır kaymasını düzelt
                 if (!isNaN(parseInt(awayTeam))) {
                     awayTeam = lines[3];
                     homeScore = lines[4];
                     awayScore = lines[5];
                 }
 
-                // Saat içermiyorsa (yani oynanmışsa/oynanıyorsa) ve skoru varsa al
+                // Maç saat içermiyorsa (yani bittiyse) ve skoru belli ise
                 if (homeScore !== "-" && !status.includes(':')) {
                     const hScore = parseInt(homeScore) || 0;
                     const aScore = parseInt(awayScore) || 0;
-                    
-                    // Flashscore ID'sini al, yoksa rastgele at
                     const matchId = el.id ? parseInt(el.id.replace('g_1_', ''), 36) || Math.floor(Math.random() * 1000000) : Math.floor(Math.random() * 1000000);
                     
-                    // 🔥 SCOREPOP API-FOOTBALL V3 ŞEMASI 🔥
+                    // 🔥 SCOREPOP API-FOOTBALL v3 JSON YAPISI 🔥
                     results.push({
                         fixture: {
                             id: matchId,
@@ -99,7 +97,7 @@ async function collectMatches(page, targetDate) {
     }, dateStr, timestamp);
 }
 
-// 🔥 matches -> games ALT KOLEKSİYONUNA YAZMA 🔥
+// 🔥 matches -> YYYY-MM-DD -> games ALT KOLEKSİYONUNA YAZMA 🔥
 async function saveToFirestore(db, dateStr, matches) {
     const batch = db.batch();
     const dateRef = db.collection('matches').doc(dateStr);
@@ -123,7 +121,7 @@ async function saveToFirestore(db, dateStr, matches) {
     const db = initFirebase();
     const browser = await puppeteer.launch({
         headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080']
     });
     const page = await browser.newPage();
 
@@ -132,22 +130,41 @@ async function saveToFirestore(db, dateStr, matches) {
     if (MODE === 'single' && SINGLE) targetDate = new Date(SINGLE);
 
     const dateStr = formatDate(targetDate);
-    console.log(`📅 İşlem Tarihi: ${dateStr}`);
+    console.log(`📅 Hedef Tarih: ${dateStr}`);
 
     try {
         await page.goto('https://www.flashscore.com.tr/', { waitUntil: 'networkidle2', timeout: 60000 });
         
-        try {
-            await page.waitForSelector('#onetrust-accept-btn-handler', { timeout: 3000 });
-            await page.click('#onetrust-accept-btn-handler');
-            await sleep(1000);
-        } catch(e) {}
+        // 1️⃣ ÇEREZLERİ ZORLA GEÇ
+        await page.evaluate(() => {
+            const cookieBtn = document.querySelector('#onetrust-accept-btn-handler');
+            if (cookieBtn) cookieBtn.click();
+        });
+        await sleep(2000);
 
-        try {
-            await page.waitForSelector('.calendar__direction--yesterday', { timeout: 5000 });
-            await page.click('.calendar__direction--yesterday');
-            await sleep(5000);
-        } catch(e) { console.log("⚠️ Tarih navigasyonu yapılamadı."); }
+        // 2️⃣ DÜN BUTONUNA ZORLA TIKLA (Engel tanımaz)
+        const navSuccess = await page.evaluate(() => {
+            const prevBtn = document.querySelector('.calendar__direction--yesterday') || 
+                            document.querySelector('.calendar__navigation--yesterday') ||
+                            document.querySelector('[title="Önceki gün"]') ||
+                            document.querySelector('[title="Previous day"]');
+            if (prevBtn) {
+                prevBtn.click();
+                return true;
+            }
+            return false;
+        });
+
+        if (navSuccess) {
+            console.log("  🔄 Dün butonuna tıklandı, maçlar yükleniyor...");
+            await sleep(6000); // Maçların tam inmesini bekle
+        } else {
+            console.log("  ⚠️ Dün butonu bulunamadı, mevcut ekrandaki maçlar çekilecek.");
+        }
+
+        // Sayfayı aşağı kaydırıp gizli maçların yüklenmesini sağla
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await sleep(1000);
 
         const matches = await collectMatches(page, targetDate);
 
@@ -157,7 +174,7 @@ async function saveToFirestore(db, dateStr, matches) {
             console.log("  ❌ İşlenecek bitmiş maç bulunamadı.");
         }
     } catch (e) {
-        console.error("🔴 HATA:", e.message);
+        console.error("  🔴 HATA:", e.message);
     } finally {
         await browser.close();
         process.exit();
