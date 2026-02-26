@@ -14,10 +14,7 @@ function logErr(...a) { const m = a.join(' '); console.error(m); logFile.write('
 process.on('uncaughtException',  e => { logErr('💥 UNCAUGHT:', e.stack||e.message); logFile.end(()=>process.exit(1)); });
 process.on('unhandledRejection', e => { logErr('💥 REJECTION:', e?.stack||e);        logFile.end(()=>process.exit(1)); });
 
-// ─── ARGS ────────────────────────────────────────────────────────────────────
-const args = Object.fromEntries(
-    process.argv.slice(2).filter(a=>a.startsWith('--')).map(a=>a.slice(2).split('='))
-);
+const args = Object.fromEntries(process.argv.slice(2).filter(a=>a.startsWith('--')).map(a=>a.slice(2).split('=')));
 const MODE      = args.mode || 'daily';
 const SINGLE    = args.date || null;
 const FROM_DATE = args.from || null;
@@ -28,29 +25,35 @@ log(`📋 Mod: ${MODE.toUpperCase()}${SINGLE ? ` | Tarih: ${SINGLE}` : ''}`);
 
 // ─── FİREBASE ────────────────────────────────────────────────────────────────
 function initFirebase() {
-    log('🔥 Firebase başlatılıyor...');
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
     if (!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT bulunamadı!');
-    const sa = JSON.parse(raw);
-    initializeApp({ credential: cert(sa) });
-    const db = getFirestore();
-    log('   ✓ Firestore hazır.');
-    return db;
+    initializeApp({ credential: cert(JSON.parse(raw)) });
+    return getFirestore();
 }
 
-// ─── YARDIMCILAR ─────────────────────────────────────────────────────────────
 const formatDate = d => d.toISOString().split('T')[0];
 const sleep      = ms => new Promise(r => setTimeout(r, ms));
 
-// Gece 3 hack'ini sildik! Tarayıcı zaten TR saatinde olduğu için sayfadaki "Bugün" gerçek TR bugünüdür.
-function getTRToday() {
-    const s = new Date().toLocaleString('en-CA', { timeZone: 'Europe/Istanbul' });
-    return new Date(s.split(',')[0] + 'T00:00:00Z');
+// 🔥 İŞTE SENİN TESPİTİN: FLASHSCORE SAATİNİ HESAPLAMA 🔥
+function getFlashscoreToday() {
+    // Gaziantep/TR saatini alıyoruz (UTC+3)
+    const trDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' }));
+    
+    // Flashscore gece 04:00'te yeni güne geçer. 
+    // Mevcut saatten 4 saat çıkarırsak, gece 01:00'de çalışsa bile "Dün" olduğunu anlar!
+    trDate.setHours(trDate.getHours() - 4);
+    
+    const y = trDate.getFullYear();
+    const m = String(trDate.getMonth() + 1).padStart(2, '0');
+    const d = String(trDate.getDate()).padStart(2, '0');
+    
+    return new Date(`${y}-${m}-${d}T00:00:00Z`);
 }
-function getYesterday() { const d = getTRToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
+
+function getYesterday() { const d = getFlashscoreToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
 function parseTargetDate(s) { return new Date(s + 'T00:00:00Z'); }
 
-// ─── TAKVİM ──────────────────────────────────────────────────────────────────
+// ─── TAKVİM TIKLAMA ──────────────────────────────────────────────────────────
 async function clickArrow(page, dir) {
     const L = ['.calendar__direction--yesterday','.calendar__navigation--yesterday'];
     const R = ['.calendar__direction--tomorrow','.calendar__navigation--tomorrow'];
@@ -63,25 +66,16 @@ async function clickArrow(page, dir) {
             .find(e => { const c=(e.className?.toString()||'').toLowerCase(); return kw.some(k=>c.includes(k)); });
         if (el) { el.click(); return true; }
         return false;
-    }, dir);
-}
-
-async function getPageDate(page) {
-    return page.evaluate(() => {
-        const el = document.querySelector('.calendar__static, .calendar__datepicker');
-        return el ? el.innerText.trim() : null;
     });
 }
 
 async function navigateToDate(page, targetDate) {
     const targetStr = formatDate(targetDate);
-    const rawPage   = await getPageDate(page);
-    log(`  📅 Hedef: ${targetStr} | Sayfada: ${rawPage||'okunamadı'}`);
-
-    let current = getTRToday(); // Her halükarda TR bugünü baz alınıyor
+    // Artık sayfadaki hatalı yazıyı okumaya çalışmıyoruz. Flashscore'un GERÇEK bugününü hesaplıyoruz.
+    let current = getFlashscoreToday(); 
 
     const diff  = Math.round((current - targetDate) / 86400000);
-    log(`  🔢 TR Bugünü (${formatDate(current)}) → Hedef (${targetStr}) = ${diff} adım`);
+    log(`  🔢 Flashscore Bugünü (${formatDate(current)}) → Hedef (${targetStr}) = ${diff} adım`);
     if (diff === 0) { log('  ✅ Zaten doğru tarih.'); return; }
 
     const dir   = diff > 0 ? 'left' : 'right';
@@ -90,14 +84,14 @@ async function navigateToDate(page, targetDate) {
     for (let i = 0; i < steps; i++) {
         try {
             await Promise.all([
-                page.waitForResponse(r => r.status() === 200 && (r.url().includes('feed') || r.url().includes('event')), {timeout: 10000}).catch(()=>null),
+                page.waitForResponse(r => r.status() === 200 && (r.url().includes('feed') || r.url().includes('event')), {timeout: 8000}).catch(()=>null),
                 clickArrow(page, dir)
             ]);
         } catch(_) { await clickArrow(page, dir); }
-        await sleep(2000); // Sayfanın çizilmesi için bekle
+        await sleep(1500); 
         log(`    🔄 Adım ${i+1}/${steps} tamamlandı.`);
     }
-    await sleep(2000);
+    await sleep(2000); // Maçların ekrana inmesi için son bekleme
 }
 
 // ─── MAÇLARI TOPLA ───────────────────────────────────────────────────────────
@@ -106,10 +100,11 @@ async function collectMatches(page, targetDate) {
     const timestamp  = Math.floor(targetDate.getTime() / 1000);
     const seasonYear = targetDate.getFullYear();
 
+    // Aşağı kaydırarak gizli maçları yükle
     await page.evaluate(async () => {
         await new Promise(r => {
-            let p=0; const t = setInterval(()=>{ window.scrollBy(0,500); p+=500;
-                if(p>=document.body.scrollHeight){clearInterval(t);r();} },100);
+            let p=0; const t = setInterval(()=>{ window.scrollBy(0,600); p+=600;
+                if(p>=document.body.scrollHeight){clearInterval(t);r();} }, 150);
         });
     });
     await sleep(1000);
@@ -118,46 +113,45 @@ async function collectMatches(page, targetDate) {
         const results = [];
         let league = { id:0, name:'Unknown League', country:'Unknown' };
 
-        // DOM'da sadece lig başlıklarını ve maçları temiz bir şekilde yakala
         const rows = document.querySelectorAll('.event__header, .event__match');
 
         rows.forEach(el => {
             const cls = (el.className?.toString() || '').toLowerCase();
 
-            // ── HEADER (Lig Başlığı) ──
+            // 🔥 1. LİG BAŞLIĞI PARÇALAYICI (Kusursuzlaştırıldı) 🔥
             if (cls.includes('event__header')) {
                 const typeEl = el.querySelector('.event__title--type');
                 const nameEl = el.querySelector('.event__title--name');
-                const titleEl = el.querySelector('.event__title');
 
                 if (typeEl && nameEl) {
                     league.country = typeEl.textContent.replace(/:/g, '').trim();
                     league.name = nameEl.textContent.trim();
-                } else if (titleEl) {
-                    // Puan Durumu vs. sekmelerini sil
-                    const clone = titleEl.cloneNode(true);
-                    clone.querySelectorAll('.event__tabs, a').forEach(t => t.remove());
-                    const txt = clone.textContent.trim().replace(/\s+/g, ' ');
-                    const parts = txt.split(':');
-                    if (parts.length > 1) {
-                        league.country = parts[0].trim();
-                        league.name = parts[1].trim();
-                    } else {
-                        league.name = txt;
-                        league.country = "Unknown";
-                    }
                 } else {
-                    return; // İsim yoksa ligi değiştirme
+                    // Fallback: Ekranda görünen ilk satırı al (Puan Durumu gibi butonları atlar)
+                    const firstLine = (el.innerText || '').split('\n').map(l=>l.trim()).filter(Boolean)[0];
+                    if (firstLine) {
+                        if (firstLine.includes(':')) {
+                            const parts = firstLine.split(':');
+                            league.country = parts[0].trim();
+                            league.name = parts[1].trim();
+                        } else {
+                            league.name = firstLine;
+                            league.country = "Unknown";
+                        }
+                    }
                 }
 
-                // Lig adından tutarlı bir ID oluştur
+                // Eşleşmeler, Puan durumu gibi sekmelerin lig sanılmasını engelle!
+                const lowerName = league.name.toLowerCase();
+                if (lowerName.includes('puan durumu') || lowerName.includes('eşleşmeler')) return;
+
                 let h=0; 
                 for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h); 
                 league.id = Math.abs(h);
                 return;
             }
 
-            // ── MAÇ SATIRI ──
+            // 🔥 2. MAÇ SATIRI 🔥
             if (cls.includes('event__match')) {
                 const lines = (el.innerText || el.textContent).split('\n').map(l=>l.trim()).filter(Boolean);
                 if (lines.length < 5) return;
@@ -165,14 +159,14 @@ async function collectMatches(page, targetDate) {
                 const status = lines[0];
                 let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
 
-                // Kırmızı kart kayması
+                // Kırmızı kart kayması düzeltmesi
                 if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
 
-                // Başlamamış (saat içeren) veya skoru olmayanları atla
+                // Başlamamış (saati yazan) veya skoru belirsiz maçları ÇÖPE AT
                 if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
 
-                const h   = parseInt(hs)||0;
-                const a   = parseInt(as_)||0;
+                const h   = parseInt(hs);
+                const a   = parseInt(as_);
                 const raw = el.id ? el.id.replace('g_1_','') : '';
                 const id  = raw ? (parseInt(raw,36) || Math.floor(Math.random()*1e6)) : Math.floor(Math.random()*1e6);
 
@@ -218,7 +212,7 @@ async function saveToFirestore(db, dateStr, matches) {
 
     log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}`);
     const leagues = [...new Set(matches.map(m=>`${m.league.country}: ${m.league.name}`))];
-    log(`  📋 ${leagues.length} lig: ${leagues.slice(0,4).join(' | ')}${leagues.length>4?` +${leagues.length-4} daha`:''}`);
+    log(`  📋 ${leagues.length} lig kaydedildi. Örnek: ${leagues.slice(0,4).join(' | ')}`);
 }
 
 // ─── TEK GÜN ─────────────────────────────────────────────────────────────────
