@@ -26,8 +26,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function collectMatches(page, targetDate) {
     const dateStr = formatDate(targetDate);
     const timestamp = Math.floor(targetDate.getTime() / 1000);
+    const seasonYear = targetDate.getFullYear();
 
-    return await page.evaluate((dateStr, timestamp) => {
+    return await page.evaluate((dateStr, timestamp, seasonYear) => {
         const results = [];
         const matchElements = document.querySelectorAll('.event__match');
         
@@ -42,46 +43,54 @@ async function collectMatches(page, targetDate) {
                 let homeScore = lines[3];
                 let awayScore = lines[4];
 
-                // Kırmızı kart/ikon kayması düzeltmesi (çok önemli)
+                // Kırmızı kart/ikon kayması düzeltmesi
                 if (!isNaN(parseInt(awayTeam))) {
                     awayTeam = lines[3];
                     homeScore = lines[4];
                     awayScore = lines[5];
                 }
 
-                // SENİN FİLTREN: Skoru olan ve saati yazmayan (başlamamış olmayan) maçlar
+                // Sadece skoru olan (BİTMİŞ) maçları alıyoruz
                 if (homeScore !== "-" && awayScore !== "-" && isNaN(parseInt(matchStatus.charAt(0)))) {
                     const hScore = parseInt(homeScore) || 0;
                     const aScore = parseInt(awayScore) || 0;
-                    
-                    // Flashscore ID'sini al, yoksa rastgele at
                     const matchId = el.id ? parseInt(el.id.replace('g_1_', ''), 36) || Math.floor(Math.random() * 1000000) : Math.floor(Math.random() * 1000000);
                     
-                    // 🔥 SCOREPOP API-FOOTBALL v3 JSON YAPISI 🔥
+                    // 🔥 SENİN GÖNDERDİĞİN JSON ŞEMASININ BİREBİR AYNISI 🔥
                     results.push({
                         fixture: {
                             id: matchId,
                             referee: null,
                             timezone: "Europe/Istanbul",
-                            date: `${dateStr}T00:00:00+03:00`,
+                            date: `${dateStr}T20:00:00+03:00`, // Örnek saat
                             timestamp: timestamp,
                             periods: { first: null, second: null },
                             venue: { id: null, name: null, city: null },
                             status: { long: "Match Finished", short: "FT", elapsed: 90, extra: null }
                         },
                         league: {
-                            id: 0,
+                            id: 0, // Ham veriden lig ID alınamıyor, default 0
                             name: "Scraped League",
                             country: "Unknown",
                             logo: null,
                             flag: null,
-                            season: 2026,
+                            season: seasonYear,
                             round: "Regular Season",
-                            standings: true
+                            standings: false
                         },
                         teams: {
-                            home: { id: 0, name: homeTeam, logo: null, winner: hScore > aScore },
-                            away: { id: 0, name: awayTeam, logo: null, winner: aScore > hScore }
+                            home: { 
+                                id: 0, 
+                                name: homeTeam, 
+                                logo: null, 
+                                winner: hScore > aScore ? true : (hScore === aScore ? null : false) 
+                            },
+                            away: { 
+                                id: 0, 
+                                name: awayTeam, 
+                                logo: null, 
+                                winner: aScore > hScore ? true : (hScore === aScore ? null : false) 
+                            }
                         },
                         goals: { home: hScore, away: aScore },
                         score: {
@@ -95,27 +104,20 @@ async function collectMatches(page, targetDate) {
             }
         });
         return results;
-    }, dateStr, timestamp);
+    }, dateStr, timestamp, seasonYear);
 }
 
-// 🔥 matches -> YYYY-MM-DD -> games ALT KOLEKSİYONUNA YAZMA 🔥
+// 🔥 archive_matches -> YYYY-MM-DD İçine 'fixtures' Arrayi Olarak Yazıyoruz 🔥
 async function saveToFirestore(db, dateStr, matches) {
-    const batch = db.batch();
-    const dateRef = db.collection('matches').doc(dateStr);
+    const dateRef = db.collection('archive_matches').doc(dateStr);
 
-    batch.set(dateRef, { 
-        date: dateStr,
-        total_matches: matches.length,
-        last_updated: new Date().toISOString()
+    await dateRef.set({ 
+        fixtures: matches, // Tüm maçlar fixtures dizisine atılıyor
+        last_updated: new Date().toISOString(),
+        total_matches: matches.length
     }, { merge: true });
 
-    matches.forEach(match => {
-        const gameRef = dateRef.collection('games').doc(String(match.fixture.id));
-        batch.set(gameRef, match, { merge: true });
-    });
-
-    await batch.commit();
-    console.log(`  ✅ Toplam ${matches.length} maç matches/${dateStr}/games yoluna başarıyla yazıldı!`);
+    console.log(`  ✅ Toplam ${matches.length} maç archive_matches/${dateStr} belgesine yazıldı!`);
 }
 
 (async () => {
@@ -128,7 +130,6 @@ async function saveToFirestore(db, dateStr, matches) {
     });
     const page = await browser.newPage();
 
-    // KRİTİK DÜZELTME 1: Tarayıcıyı Türkiye saat dilimine zorluyoruz!
     await page.emulateTimezone('Europe/Istanbul');
 
     let targetDate = new Date();
@@ -152,17 +153,17 @@ async function saveToFirestore(db, dateStr, matches) {
         try {
             await page.waitForSelector('.calendar__direction--yesterday', { visible: true, timeout: 10000 });
             
-            // KRİTİK DÜZELTME 2: Tıkladıktan sonra yeni günün verisinin ağdan inmesini bekliyoruz
+            // Senin yazdığın o kusursuz ağ bekleme kodu!
             await Promise.all([
                 page.waitForResponse(res => res.url().includes('feed') && res.status() === 200, { timeout: 15000 }),
                 page.click('.calendar__direction--yesterday')
             ]);
             
             console.log(`✅ Takvim başarıyla değişti, ${dateStr} verileri indirildi!`);
-            await sleep(3000); // Render payı
+            await sleep(3000); 
         } catch (e) {
             console.log("⚠️ Takvim butonuna tıklanamadı veya ağ yanıtı alınamadı!", e.message);
-            // Yedek Tıklama (Ağ yanıtı gelmese bile zorla bas)
+            // Yedek Tıklama
             await page.evaluate(() => {
                 const btn = document.querySelector('.calendar__direction--yesterday');
                 if (btn) btn.click();
