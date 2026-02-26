@@ -32,28 +32,29 @@ async function collectMatches(page, targetDate) {
         const matchElements = document.querySelectorAll('.event__match');
         
         matchElements.forEach(el => {
-            // SENİN İSTEDİĞİN VE ÇALIŞAN ESKİ MANTIK
             const rawText = el.innerText;
             const lines = rawText.split('\n').map(l => l.trim()).filter(l => l !== '');
             
             if (lines.length >= 5) {
-                const status = lines[0];
+                const matchStatus = lines[0];
                 let homeTeam = lines[1];
                 let awayTeam = lines[2];
                 let homeScore = lines[3];
                 let awayScore = lines[4];
 
-                // Araya kırmızı kart veya ikon girerse satır kaymasını düzelt
+                // Kırmızı kart/ikon kayması düzeltmesi (çok önemli)
                 if (!isNaN(parseInt(awayTeam))) {
                     awayTeam = lines[3];
                     homeScore = lines[4];
                     awayScore = lines[5];
                 }
 
-                // Maç saat içermiyorsa (yani bittiyse) ve skoru belli ise
-                if (homeScore !== "-" && !status.includes(':')) {
+                // SENİN FİLTREN: Skoru olan ve saati yazmayan (başlamamış olmayan) maçlar
+                if (homeScore !== "-" && awayScore !== "-" && isNaN(parseInt(matchStatus.charAt(0)))) {
                     const hScore = parseInt(homeScore) || 0;
                     const aScore = parseInt(awayScore) || 0;
+                    
+                    // Flashscore ID'sini al, yoksa rastgele at
                     const matchId = el.id ? parseInt(el.id.replace('g_1_', ''), 36) || Math.floor(Math.random() * 1000000) : Math.floor(Math.random() * 1000000);
                     
                     // 🔥 SCOREPOP API-FOOTBALL v3 JSON YAPISI 🔥
@@ -114,16 +115,21 @@ async function saveToFirestore(db, dateStr, matches) {
     });
 
     await batch.commit();
-    console.log(`  ✅ ${matches.length} maç matches/${dateStr}/games yoluna yazıldı!`);
+    console.log(`  ✅ Toplam ${matches.length} maç matches/${dateStr}/games yoluna başarıyla yazıldı!`);
 }
 
 (async () => {
     const db = initFirebase();
+    console.log("🤖 ScorePop Türkiye Saat Dilimi Botu Başlatılıyor...");
+
     const browser = await puppeteer.launch({
         headless: "new",
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080']
     });
     const page = await browser.newPage();
+
+    // KRİTİK DÜZELTME 1: Tarayıcıyı Türkiye saat dilimine zorluyoruz!
+    await page.emulateTimezone('Europe/Istanbul');
 
     let targetDate = new Date();
     if (MODE === 'daily') targetDate.setDate(targetDate.getDate() - 1);
@@ -131,41 +137,44 @@ async function saveToFirestore(db, dateStr, matches) {
 
     const dateStr = formatDate(targetDate);
     console.log(`📅 Hedef Tarih: ${dateStr}`);
+    console.log("🔍 Flashscore'a sızılıyor...");
 
     try {
         await page.goto('https://www.flashscore.com.tr/', { waitUntil: 'networkidle2', timeout: 60000 });
         
-        // 1️⃣ ÇEREZLERİ ZORLA GEÇ
-        await page.evaluate(() => {
-            const cookieBtn = document.querySelector('#onetrust-accept-btn-handler');
-            if (cookieBtn) cookieBtn.click();
-        });
-        await sleep(2000);
+        try {
+            await page.waitForSelector('#onetrust-accept-btn-handler', { timeout: 5000 });
+            await page.click('#onetrust-accept-btn-handler');
+            await sleep(1000);
+        } catch(e) {}
 
-        // 2️⃣ DÜN BUTONUNA ZORLA TIKLA (Engel tanımaz)
-        const navSuccess = await page.evaluate(() => {
-            const prevBtn = document.querySelector('.calendar__direction--yesterday') || 
-                            document.querySelector('.calendar__navigation--yesterday') ||
-                            document.querySelector('[title="Önceki gün"]') ||
-                            document.querySelector('[title="Previous day"]');
-            if (prevBtn) {
-                prevBtn.click();
-                return true;
-            }
-            return false;
-        });
-
-        if (navSuccess) {
-            console.log("  🔄 Dün butonuna tıklandı, maçlar yükleniyor...");
-            await sleep(6000); // Maçların tam inmesini bekle
-        } else {
-            console.log("  ⚠️ Dün butonu bulunamadı, mevcut ekrandaki maçlar çekilecek.");
+        console.log(`🔄 Takvime tıklanıyor ve ağ isteği bekleniyor...`);
+        try {
+            await page.waitForSelector('.calendar__direction--yesterday', { visible: true, timeout: 10000 });
+            
+            // KRİTİK DÜZELTME 2: Tıkladıktan sonra yeni günün verisinin ağdan inmesini bekliyoruz
+            await Promise.all([
+                page.waitForResponse(res => res.url().includes('feed') && res.status() === 200, { timeout: 15000 }),
+                page.click('.calendar__direction--yesterday')
+            ]);
+            
+            console.log(`✅ Takvim başarıyla değişti, ${dateStr} verileri indirildi!`);
+            await sleep(3000); // Render payı
+        } catch (e) {
+            console.log("⚠️ Takvim butonuna tıklanamadı veya ağ yanıtı alınamadı!", e.message);
+            // Yedek Tıklama (Ağ yanıtı gelmese bile zorla bas)
+            await page.evaluate(() => {
+                const btn = document.querySelector('.calendar__direction--yesterday');
+                if (btn) btn.click();
+            });
+            await sleep(5000);
         }
 
         // Sayfayı aşağı kaydırıp gizli maçların yüklenmesini sağla
         await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
         await sleep(1000);
 
+        console.log(`⚽ ${dateStr} BİTMİŞ maçları süzülüyor...`);
         const matches = await collectMatches(page, targetDate);
 
         if (matches.length > 0) {
@@ -177,6 +186,7 @@ async function saveToFirestore(db, dateStr, matches) {
         console.error("  🔴 HATA:", e.message);
     } finally {
         await browser.close();
+        console.log("🏁 Operasyon başarıyla tamamlandı.");
         process.exit();
     }
 })();
