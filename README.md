@@ -1,0 +1,2 @@
+# scorepop-worker
+scorepop worker
