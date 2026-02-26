@@ -143,58 +143,49 @@ async function collectMatches(page, targetDate) {
 
     return page.evaluate((dateStr, timestamp, seasonYear) => {
         const results = [];
-        let league = { id:0, name:'Unknown League', country:'Unknown' };
+        let league = { id: 0, name: 'Unknown League', country: 'Unknown' };
 
-        // 🔥 TÜRÜ NE OLURSA OLSUN LİG BAŞLIKLARINI VE MAÇLARI YAKALA 🔥
-        const rows = document.querySelectorAll(
-            '.headerLeague__wrapper, .event__header, [class*="headerLeague"], .event__match, [id^="g_1_"]'
-        );
+        // 🔥 KUSURSUZ SEÇİCİ: Sadece maçlar ve LİG başlıkları. Ana menüyü ASLA görmez!
+        const rows = document.querySelectorAll('.event__header, .event__match, [id^="g_1_"]');
 
         rows.forEach(el => {
             const cls = (el.className?.toString() || '').toLowerCase();
             const id = el.id || '';
 
             const isMatch = cls.includes('match') || id.startsWith('g_1_');
-            const isHeader = !isMatch && (cls.includes('header') || cls.includes('league'));
+            const isHeader = !isMatch && cls.includes('header');
 
             // ── LİG BAŞLIĞI İŞLEME ──
             if (isHeader) {
-                const typeEl = el.querySelector('.event__title--type, [class*="title--type"]');
-                const nameEl = el.querySelector('.event__title--name, [class*="title--name"]');
+                const typeEl = el.querySelector('.event__title--type');
+                const nameEl = el.querySelector('.event__title--name');
 
                 if (typeEl && nameEl) {
                     league.country = typeEl.textContent.replace(/:/g, '').trim();
                     league.name = nameEl.textContent.trim();
                 } else {
-                    // Tüm metni alıp çöplerden arındıran Zırhlı Ayrıştırıcı
-                    const rawText = el.innerText || el.textContent || '';
-                    let lines = rawText.split('\n').map(l=>l.trim()).filter(Boolean);
-                    
-                    const garbage = ['puan durumu', 'canlı puan durumu', 'eşleşmeler', 'tümü', 'canlı', 'oranlar', 'bitmiş', 'programlar', 'fikstür'];
-                    
-                    lines = lines.filter(l => {
-                        const lower = l.toLowerCase();
-                        if (garbage.some(g => lower === g)) return false;
-                        if (/\d{2}\/\d{2}/.test(l)) return false; // Tarihleri atla (örn: 27/02 Cum)
-                        return true;
-                    });
-
-                    if (lines.length > 0) {
-                        // Genelde ülke adı ":" içerir veya tamamen BÜYÜK HARFTİR
-                        const countryIndex = lines.findIndex(l => l.includes(':') || l === l.toUpperCase());
+                    // Eğer type veya name class'ı yoksa, sadece event__title divinin içine bak
+                    const titleEl = el.querySelector('.event__title');
+                    if (titleEl) {
+                        // Puan Durumu, Eşleşmeler gibi gereksiz butonları DOM'dan silerek sadece metni al
+                        const clone = titleEl.cloneNode(true);
+                        clone.querySelectorAll('a, button, .event__tabs, svg').forEach(e => e.remove());
                         
-                        if (countryIndex !== -1) {
-                            league.country = lines[countryIndex].replace(/:/g, '').trim();
-                            league.name = lines.find((l, idx) => idx !== countryIndex) || league.country;
-                        } else {
-                            league.country = lines[0];
-                            league.name = lines[1] || lines[0];
+                        const lines = clone.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
+                        if (lines.length >= 2) {
+                            league.country = lines[0].replace(/:/g, '').trim();
+                            league.name = lines[1];
+                        } else if (lines.length === 1) {
+                            league.name = lines[0];
+                            league.country = "Unknown";
                         }
+                    } else {
+                        // 🔥 İŞTE HAYAT KURTARAN YER: İçinde event__title yoksa bu lig başlığı değildir (Mesela üst menüdür). Yoksay ve atla!
+                        return;
                     }
                 }
 
-                if (league.name === 'Unknown League') return;
-
+                // Lig adından ID üret (ScorePop'ta jilet gibi gruplanmasını sağlar)
                 let h=0;
                 for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
                 league.id = Math.abs(h);
@@ -212,8 +203,10 @@ async function collectMatches(page, targetDate) {
                 const status = lines[0];
                 let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
 
+                // Kırmızı kart kayması
                 if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
 
+                // Skoru olmayan veya başlamamış maçları atla
                 if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
 
                 const h   = parseInt(hs);
