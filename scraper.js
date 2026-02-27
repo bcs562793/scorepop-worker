@@ -85,13 +85,86 @@ async function getPageDate(page) {
 
 async function navigateToDate(page, targetDate) {
     const targetStr = formatDate(targetDate);
-    log(`  📅 Hedef: ${targetStr} — direkt URL ile gidiliyor...`);
+    log(`  📅 Hedef: ${targetStr}`);
 
-    // Takvim butonuyla gitmek yerine hash URL'e direkt git — 30x hızlı
-    await page.goto(`https://www.flashscore.com.tr/#${targetStr}`, {waitUntil:'domcontentloaded', timeout:30000});
-    await sleep(2000);
+    // 1. Önce ana sayfayı yükle
+    const currentHash = await page.evaluate(() => window.location.hash);
+    if (!currentHash) {
+        await page.goto('https://www.flashscore.com.tr/', {waitUntil:'domcontentloaded', timeout:30000});
+        await sleep(2000);
+    }
 
-    // Doğrulama
+    // 2. Takvim butonuna tıkla
+    const opened = await page.evaluate(() => {
+        const btn = document.querySelector('[data-testid="wcl-dayPickerButton"]');
+        if (btn) { btn.click(); return true; }
+        return false;
+    });
+
+    if (!opened) {
+        log(`  ⚠️ Takvim butonu bulunamadı, hash URL deneniyor...`);
+        await page.goto(`https://www.flashscore.com.tr/#${targetStr}`, {waitUntil:'domcontentloaded', timeout:30000});
+        await sleep(3000);
+        const final = await getPageDate(page);
+        log(`  ✅ Navigasyon bitti. Sayfada: ${final||'?'}`);
+        return;
+    }
+
+    await sleep(800); // Takvim animasyonu bekle
+
+    // 3. Hedef tarihi parse et
+    const [year, month, day] = targetStr.split('-').map(Number);
+
+    // 4. Takvimde doğru ay/yıla git, sonra günü seç
+    const clicked = await page.evaluate((y, m, d) => {
+        // Takvim container'ı bul
+        const calendar = document.querySelector('[role="dialog"], [class*="calendar"], [class*="datePicker"], [class*="dayPicker"]');
+        if (!calendar) return false;
+
+        // Sayfadaki tarihi bul ve hedef aya git (prev/next butonları)
+        // Basit yaklaşım: tüm gün butonlarını tara, doğru tarihi bul
+        const allDays = [...document.querySelectorAll('[role="gridcell"] button, [class*="day"] button, [data-day]')];
+        for (const dayBtn of allDays) {
+            const dateAttr = dayBtn.getAttribute('data-day') || dayBtn.getAttribute('data-date') || '';
+            const label = dayBtn.getAttribute('aria-label') || dayBtn.textContent.trim();
+            if (dateAttr.includes(`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`)) {
+                dayBtn.click();
+                return true;
+            }
+            // Sadece gün numarası varsa — ay değişikliği gerekmeyebilir
+            if (parseInt(label) === d && dayBtn.closest('[class*="current"], [class*="active"]')) {
+                dayBtn.click();
+                return true;
+            }
+        }
+        return false;
+    }, year, month, day);
+
+    if (!clicked) {
+        // Takvim açıldı ama gün bulunamadı — ay değiştir ve tekrar dene
+        log(`  ⚠️ Takvimde gün bulunamadı, ok ile gidiliyor...`);
+        // Escape ile kapat
+        await page.keyboard.press('Escape');
+        await sleep(300);
+        // Fallback: eski ok yöntemi ama daha az beklemeyle
+        const rawPage = await getPageDate(page);
+        let current = getTRToday();
+        if (rawPage) {
+            const im = rawPage.match(/(\d{4}-\d{2}-\d{2})/);
+            if (im) current = new Date(im[1]+'T00:00:00Z');
+        }
+        const diff = Math.round((current - targetDate) / 86400000);
+        const dir = diff > 0 ? 'left' : 'right';
+        const steps = Math.abs(diff);
+        for (let i = 0; i < steps; i++) {
+            await clickArrow(page, dir);
+            await sleep(600);
+        }
+        await sleep(2000);
+    } else {
+        await sleep(2500); // Sayfa yüklensin
+    }
+
     const final = await getPageDate(page);
     log(`  ✅ Navigasyon bitti. Sayfada: ${final||'?'}`);
 }
