@@ -217,9 +217,13 @@ async function collectMatches(page, targetDate) {
                 // ── MAÇ URL & RAW_ID ──
                 const linkEl   = el.querySelector('a.eventRowLink');
                 const href     = linkEl ? linkEl.getAttribute('href') : null;
-                // href örn: /mac/futbol/crvena-zvezda-ncRzHK14/lille-pfDZL71o/?mid=rqaBOCNH
-                // raw_id  → futbol/crvena-zvezda-ncRzHK14/lille-pfDZL71o/
-                const rawId = href ? href.replace(/^\/mac\//, '').replace(/\?.*$/, '') : null;
+                // href tam URL veya göreceli olabilir, her iki durumu da handle et
+                // Sonuç: futbol/atalanta-8C9JjMXu/dortmund-nP1i5US1/
+                let rawId = null;
+                if (href) {
+                    const m = href.match(/\/mac\/(.+?)(?:\?|#|$)/);
+                    rawId = m ? m[1] : null;
+                }
 
                 results.push({
                     fixture: {
