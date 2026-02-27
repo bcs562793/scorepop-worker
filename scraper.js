@@ -142,10 +142,17 @@ function parseStatus(statusCode, statusText) {
   [36] [countryId, countryName, leagueId, leagueName, tournId, season, "", aeleme, ?, leagueCode, ?, sportType]
   [37] hasOdds
 */
+// ─── TEK MAÇ PARSE ────────────────────────────────────────────────────────────
 function parseMatch(m, targetDate) {
     if (!Array.isArray(m) || m.length < 37) return null;
 
     const li = Array.isArray(m[36]) ? m[36] : [];
+
+    // 🔥 FLUTTER ÇÖKMESİNİ ENGELLEYEN YER: ID'leri ZORLA INT YAPTIK 🔥
+    const matchId  = parseInt(m[0]) || 0;
+    const homeId   = parseInt(m[1]) || 0;
+    const awayId   = parseInt(m[3]) || 0;
+    const leagueId = parseInt(li[2]) || 0;
 
     // Skor & goller
     const scoreStr = m[7] || '';
@@ -171,13 +178,12 @@ function parseMatch(m, targetDate) {
     // Lig bilgisi
     const countryId   = li[0]  ?? null;
     const countryName = li[1]  ?? 'Unknown';
-    const leagueId    = li[2]  ?? null;
     const leagueName  = li[3]  ?? 'Unknown';
     const season      = li[5]  ?? String(targetDate.getFullYear());
     const leagueCode  = li[9]  ?? '';
     const sportTypeId = li[11] ?? 1;
 
-    // Oranlar (null ise "0.00" yerine null koy)
+    // Oranlar
     const parseOdd = v => (v && v !== '0.00' && v !== '0.0') ? parseFloat(v) : null;
 
     // Tarih+saat
@@ -194,15 +200,13 @@ function parseMatch(m, targetDate) {
         ? (awayGoals > homeGoals ? true : homeGoals === awayGoals ? null : false)
         : null;
 
-    // Penalty / aeleme bilgisi
     const isPenalty = statusCode === 8;
     const isElim    = (li[7] === 1) ? true : false;
 
     return {
-        // ── flashscore bot ile AYNI yapı ──
         fixture: {
-            id:        m[0],
-            raw_id:    null,            // Mackolik'te detay URL yok
+            id:        matchId, // Artık kesin int
+            raw_id:    null,
             referee:   null,
             timezone:  'Europe/Istanbul',
             date:      isoDate,
@@ -212,7 +216,7 @@ function parseMatch(m, targetDate) {
             status:    status,
         },
         league: {
-            id:         leagueId,
+            id:         leagueId, // Artık kesin int
             name:       leagueName,
             country:    countryName,
             logo:       null,
@@ -226,14 +230,14 @@ function parseMatch(m, targetDate) {
         },
         teams: {
             home: {
-                id:     m[1],
+                id:     homeId, // Artık kesin int
                 name:   m[2],
                 logo:   null,
                 winner: homeWin,
                 red_cards: rcHome,
             },
             away: {
-                id:     m[3],
+                id:     awayId, // Artık kesin int
                 name:   m[4],
                 logo:   null,
                 winner: awayWin,
@@ -250,14 +254,11 @@ function parseMatch(m, targetDate) {
             extratime: { home: null,      away: null      },
             penalty:   isPenalty ? { home: null, away: null } : { home: null, away: null },
         },
-        // Mackolik bu endpoint'te sağlamıyor — boş bırak, ileride zenginleştirilebilir
         events:  [],
         stats: homeShotsOT !== null ? [
             { type: 'Shots on Target', homeVal: String(homeShotsOT), awayVal: String(awayShotsOT ?? 0) },
         ] : [],
         lineups: { home: { formation: '', players: [], subs: [] }, away: { formation: '', players: [], subs: [] } },
-
-        // Ekstra — flashscore'da olmayan ama ScorePop için faydalı
         odds: {
             home: parseOdd(m[18]),
             draw: parseOdd(m[19]),
