@@ -327,6 +327,7 @@ function fetchMatchDetails(matchId) {
 }
 
 // 🔥 ROKET VERSİYONU (FLUTTER UYUMLU ANAHTARLARLA) 🔥
+// 🔥 ROKET VERSİYONU (SCOREPOP FLUTTER JSON YAPISINA %100 UYUMLU) 🔥
 async function enrichMatchEvents(matches) {
     log(`\n🔍 Maç detayları (Events) çekiliyor... Toplam: ${matches.length} maç`);
     
@@ -347,38 +348,45 @@ async function enrichMatchEvents(matches) {
             if (details && details.e && Array.isArray(details.e)) {
                 match.events = details.e.map(ev => {
                     const teamCode   = ev[0]; 
-                    const minute     = ev[1];
-                    const playerName = ev[3];
+                    const minute     = parseInt(ev[1], 10) || 0; // 🔥 Kesinlikle INT olmalı
+                    const playerName = ev[3] || '';
                     const typeCode   = ev[4];
                     const extra      = ev[5] || {};
 
-                    // 🔥 FLUTTER İÇİN ESKİ FLASHSCORE ANAHTARLARINA ÇEVİRİYORUZ 🔥
-                    const team = teamCode === 1 ? 'home' : 'away';
-                    const time = minute + "'"; // 60 -> 60'
+                    const teamSide = teamCode === 1 ? 'home' : 'away';
+                    const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
+                    const teamId   = teamCode === 1 ? match.teams.home.id : match.teams.away.id;
 
-                    let type = 'Unknown';
-                    let detail = '';
+                    let typeStr    = 'Other';
+                    let detailStr  = '';
+                    let assistName = null;
 
-                    // Flashscore ile birebir aynı Type ve Detail formatı
+                    // Olay Türünü ve Detayları Senin JSON Formatına Göre Ayarlama
                     if (typeCode === 1) {
-                        type = 'Goal';
-                        if (extra.astName) detail = `(${extra.astName})`;
+                        typeStr = 'Goal';
+                        detailStr = 'Normal Goal';
+                        if (extra.astName) assistName = `(${extra.astName})`; // Gollerde parantezli
                     } else if (typeCode === 2) {
-                        type = 'Yellow Card';
+                        typeStr = 'Yellow Card';
                     } else if (typeCode === 3 || typeCode === 6) {
-                        type = 'Red Card';
+                        typeStr = 'Red Card';
                     } else if (typeCode === 4) {
-                        type = 'Substitution'; // subst yerine tam kelime
-                        if (extra.sub) detail = `Çıkan: ${extra.sub}`; 
+                        typeStr = 'subst'; // Tam olarak uygulamanın beklediği "subst" değeri
+                        detailStr = 'Substitution';
+                        if (extra.sub) assistName = extra.sub; // Değişiklikte parantezsiz
                     }
 
-                    // Obje yapısı Flashscore ile %100 aynı oldu
+                    // 🔥 SENİN JSON ŞABLONUNUN BİREBİR AYNISI 🔥
                     return {
-                        time: time,
-                        team: team,
-                        type: type,
-                        player: playerName,
-                        detail: detail
+                        minute: minute,
+                        minuteExtra: null,
+                        type: typeStr,
+                        detail: detailStr,
+                        playerName: playerName,
+                        assistName: assistName,
+                        teamSide: teamSide,
+                        teamId: teamId,
+                        teamName: teamName
                     };
                 });
             }
