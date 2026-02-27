@@ -143,56 +143,55 @@ function parseStatus(statusCode, statusText) {
   [37] hasOdds
 */
 // ─── TEK MAÇ PARSE ────────────────────────────────────────────────────────────
+// Durum kodu → flashscore uyumlu status objesi
+function parseStatus(statusCode, statusText) {
+    const map = {
+        0:  { long: 'Not Started',     short: 'NS',  elapsed: null },
+        4:  { long: 'Match Finished',  short: 'FT',  elapsed: 90   },
+        8:  { long: 'Match Finished',  short: 'PEN', elapsed: 120  },
+        9:  { long: 'Postponed',       short: 'PST', elapsed: null },
+        20: { long: 'Extra Time',      short: 'ET',  elapsed: 105  },
+        13: { long: 'Match Finished',  short: 'FT',  elapsed: null },  // Basketbol
+    };
+    return { ...(map[statusCode] || { long: statusText || 'Unknown', short: 'UN', elapsed: null }), extra: null };
+}
+
+// ─── TEK MAÇ PARSE (FLUTTER KUSURSUZ UYUMU) ───────────────────────────────────
 function parseMatch(m, targetDate) {
     if (!Array.isArray(m) || m.length < 37) return null;
 
     const li = Array.isArray(m[36]) ? m[36] : [];
 
-    // 🔥 FLUTTER ÇÖKMESİNİ ENGELLEYEN YER: ID'leri ZORLA INT YAPTIK 🔥
-    const matchId  = parseInt(m[0]) || 0;
-    const homeId   = parseInt(m[1]) || 0;
-    const awayId   = parseInt(m[3]) || 0;
-    const leagueId = parseInt(li[2]) || 0;
+    // 🔥 FLUTTER İÇİN ZORUNLU INTEGER (SAYI) DÖNÜŞÜMLERİ 🔥
+    const matchId    = parseInt(m[0], 10) || 0;
+    const homeId     = parseInt(m[1], 10) || 0;
+    const awayId     = parseInt(m[3], 10) || 0;
+    const leagueId   = parseInt(li[2], 10) || 0;
+    const seasonYear = parseInt(targetDate.getFullYear(), 10);
 
-    // Skor & goller
-    const scoreStr = m[7] || '';
-    const toInt = v => { const n = parseInt(v); return isNaN(n) ? null : n; };
+    // Skor & goller (Kesin Int)
+    const toInt = v => { const n = parseInt(v, 10); return isNaN(n) ? null : n; };
     const homeGoals = toInt(m[31]);
     const awayGoals = toInt(m[32]);
     const htHome    = toInt(m[29]);
     const htAway    = toInt(m[30]);
 
-    // İsabetli şut (m[12], m[13])
-    const homeShotsOT = typeof m[12] === 'number' ? m[12] : null;
-    const awayShotsOT = typeof m[13] === 'number' ? m[13] : null;
-
-    // Kırmızı kart
-    const rcHome = typeof m[10] === 'number' ? m[10] : 0;
-    const rcAway = typeof m[11] === 'number' ? m[11] : 0;
-
     // Durum
-    const statusCode = typeof m[5] === 'number' ? m[5] : 0;
+    const statusCode = parseInt(m[5], 10) || 0;
     const statusText = typeof m[6] === 'string'  ? m[6] : '';
     const status     = parseStatus(statusCode, statusText);
 
     // Lig bilgisi
-    const countryId   = li[0]  ?? null;
     const countryName = li[1]  ?? 'Unknown';
     const leagueName  = li[3]  ?? 'Unknown';
-    const season      = li[5]  ?? String(targetDate.getFullYear());
-    const leagueCode  = li[9]  ?? '';
-    const sportTypeId = li[11] ?? 1;
-
-    // Oranlar
-    const parseOdd = v => (v && v !== '0.00' && v !== '0.0') ? parseFloat(v) : null;
 
     // Tarih+saat
-    const dateStr  = formatDate(targetDate);
-    const timeStr  = typeof m[16] === 'string' ? m[16] : '00:00';
-    const isoDate  = `${dateStr}T${timeStr}:00+03:00`;
-    const timestamp = Math.floor(targetDate.getTime() / 1000);
+    const dateStr   = formatDate(targetDate);
+    const timeStr   = typeof m[16] === 'string' ? m[16] : '00:00';
+    const isoDate   = `${dateStr}T${timeStr}:00+03:00`;
+    const timestamp = parseInt(Math.floor(targetDate.getTime() / 1000), 10);
 
-    // Kazanan
+    // Kazananlar
     const homeWin = homeGoals !== null && awayGoals !== null
         ? (homeGoals > awayGoals ? true : homeGoals === awayGoals ? null : false)
         : null;
@@ -200,70 +199,53 @@ function parseMatch(m, targetDate) {
         ? (awayGoals > homeGoals ? true : homeGoals === awayGoals ? null : false)
         : null;
 
-    const isPenalty = statusCode === 8;
-    const isElim    = (li[7] === 1) ? true : false;
-
     return {
         fixture: {
-            id:        matchId, // Artık kesin int
+            id:        matchId,        // INT
             raw_id:    null,
             referee:   null,
             timezone:  'Europe/Istanbul',
             date:      isoDate,
-            timestamp: timestamp,
+            timestamp: timestamp,      // INT
             periods:   { first: null, second: null },
             venue:     { id: null, name: null, city: null },
             status:    status,
         },
         league: {
-            id:         leagueId, // Artık kesin int
+            id:         leagueId,      // INT
             name:       leagueName,
             country:    countryName,
             logo:       null,
             flag:       null,
-            season:     season,
+            season:     seasonYear,    // INT (Önceden string gidebiliyordu, çökmeye sebep oluyordu)
             round:      'Regular Season',
-            standings:  false,
-            code:       leagueCode,
-            sport:      SPORT_TYPE[sportTypeId] || 'Football',
-            is_elim:    isElim,
+            standings:  false
         },
         teams: {
             home: {
-                id:     homeId, // Artık kesin int
-                name:   m[2],
+                id:     homeId,        // INT
+                name:   m[2] || "Unknown",
                 logo:   null,
-                winner: homeWin,
-                red_cards: rcHome,
+                winner: homeWin
             },
             away: {
-                id:     awayId, // Artık kesin int
-                name:   m[4],
+                id:     awayId,        // INT
+                name:   m[4] || "Unknown",
                 logo:   null,
-                winner: awayWin,
-                red_cards: rcAway,
-            },
+                winner: awayWin
+            }
         },
         goals: {
-            home: homeGoals,
-            away: awayGoals,
+            home: homeGoals, // INT
+            away: awayGoals, // INT
         },
         score: {
             halftime:  { home: htHome,    away: htAway    },
             fulltime:  { home: homeGoals, away: awayGoals },
             extratime: { home: null,      away: null      },
-            penalty:   isPenalty ? { home: null, away: null } : { home: null, away: null },
+            penalty:   { home: null,      away: null      },
         },
-        events:  [],
-        stats: homeShotsOT !== null ? [
-            { type: 'Shots on Target', homeVal: String(homeShotsOT), awayVal: String(awayShotsOT ?? 0) },
-        ] : [],
-        lineups: { home: { formation: '', players: [], subs: [] }, away: { formation: '', players: [], subs: [] } },
-        odds: {
-            home: parseOdd(m[18]),
-            draw: parseOdd(m[19]),
-            away: parseOdd(m[20]),
-        },
+        events: [] // Senin attığın formata birebir uygun şekilde boş liste
     };
 }
 
