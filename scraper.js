@@ -145,6 +145,7 @@ function parseStatus(statusCode, statusText) {
 // ─── TEK MAÇ PARSE ────────────────────────────────────────────────────────────
 // Durum kodu → flashscore uyumlu status objesi
 // ─── TEK MAÇ PARSE (KUSURSUZ SKOR VE İLK YARI YAMASI) ─────────────────────────
+// ─── TEK MAÇ PARSE (LOGOLAR DİNAMİK OLARAK EKLENDİ) ──────────────────────────
 function parseMatch(m, targetDate) {
     if (!Array.isArray(m) || m.length < 37) return null;
 
@@ -158,6 +159,7 @@ function parseMatch(m, targetDate) {
     const matchId    = parseInt(m[0], 10) || 0;
     const homeId     = parseInt(m[1], 10) || 0;
     const awayId     = parseInt(m[3], 10) || 0;
+    const countryId  = parseInt(li[0], 10) || 0; // LİG/ÜLKE LOGOSU İÇİN
     const leagueId   = parseInt(li[2], 10) || 0;
     const seasonYear = parseInt(targetDate.getFullYear(), 10);
 
@@ -167,7 +169,7 @@ function parseMatch(m, targetDate) {
         return isNaN(n) ? null : n; 
     };
 
-    // 🔥 SENİN TESPİT ETTİĞİN YER: GERÇEK MAÇ SONUCU (FT) SKORLARI 🔥
+    // 🔥 GERÇEK MAÇ SONUCU (FT) SKORLARI 🔥
     let homeGoals = toInt(m[12]);
     let awayGoals = toInt(m[13]);
     
@@ -208,6 +210,11 @@ function parseMatch(m, targetDate) {
         ? (awayGoals > homeGoals ? true : homeGoals === awayGoals ? null : false)
         : null;
 
+    // 🔥 HARİKA HİLE: LOGOLARI HTML'YE GİRMEDEN ID'LERDEN ÜRETİYORUZ 🔥
+    const homeLogoUrl   = homeId > 0 ? `https://im.mackolik.com/img/logo/buyuk/${homeId}.gif` : null;
+    const awayLogoUrl   = awayId > 0 ? `https://im.mackolik.com/img/logo/buyuk/${awayId}.gif` : null;
+    const leagueLogoUrl = countryId > 0 ? `https://im.mackolik.com/img/groups/${countryId}.gif` : null;
+
     return {
         fixture: {
             id:        matchId,        // INT
@@ -224,7 +231,7 @@ function parseMatch(m, targetDate) {
             id:         leagueId,      // INT
             name:       leagueName,
             country:    countryName,
-            logo:       null,
+            logo:       leagueLogoUrl, // 🔥 LİG LOGOSU BURADA 🔥
             flag:       null,
             season:     seasonYear,    // INT
             round:      'Regular Season',
@@ -234,14 +241,14 @@ function parseMatch(m, targetDate) {
             home: {
                 id:     homeId,        // INT
                 name:   m[2] || "Unknown",
-                logo:   null,
+                logo:   homeLogoUrl,   // 🔥 EV SAHİBİ LOGO BURADA 🔥
                 winner: homeWin,
                 red_cards: rcHome
             },
             away: {
                 id:     awayId,        // INT
                 name:   m[4] || "Unknown",
-                logo:   null,
+                logo:   awayLogoUrl,   // 🔥 DEPLASMAN LOGO BURADA 🔥
                 winner: awayWin,
                 red_cards: rcAway
             }
