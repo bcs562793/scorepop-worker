@@ -144,37 +144,46 @@ function parseStatus(statusCode, statusText) {
 */
 // ─── TEK MAÇ PARSE ────────────────────────────────────────────────────────────
 // Durum kodu → flashscore uyumlu status objesi
-function parseStatus(statusCode, statusText) {
-    const map = {
-        0:  { long: 'Not Started',     short: 'NS',  elapsed: null },
-        4:  { long: 'Match Finished',  short: 'FT',  elapsed: 90   },
-        8:  { long: 'Match Finished',  short: 'PEN', elapsed: 120  },
-        9:  { long: 'Postponed',       short: 'PST', elapsed: null },
-        20: { long: 'Extra Time',      short: 'ET',  elapsed: 105  },
-        13: { long: 'Match Finished',  short: 'FT',  elapsed: null },  // Basketbol
-    };
-    return { ...(map[statusCode] || { long: statusText || 'Unknown', short: 'UN', elapsed: null }), extra: null };
-}
-
-// ─── TEK MAÇ PARSE (FLUTTER KUSURSUZ UYUMU) ───────────────────────────────────
+// ─── TEK MAÇ PARSE (KUSURSUZ SKOR VE İLK YARI YAMASI) ─────────────────────────
 function parseMatch(m, targetDate) {
     if (!Array.isArray(m) || m.length < 37) return null;
 
     const li = Array.isArray(m[36]) ? m[36] : [];
 
-    // 🔥 FLUTTER İÇİN ZORUNLU INTEGER (SAYI) DÖNÜŞÜMLERİ 🔥
+    // 🔥 BASKETBOLU TAMAMEN ÇÖPE AT (Sadece 1 = Futbol) 🔥
+    const sportTypeId = parseInt(li[11], 10) || 1;
+    if (sportTypeId !== 1) return null;
+
+    // 🔥 FLUTTER İÇİN ZORUNLU INTEGER DÖNÜŞÜMLERİ 🔥
     const matchId    = parseInt(m[0], 10) || 0;
     const homeId     = parseInt(m[1], 10) || 0;
     const awayId     = parseInt(m[3], 10) || 0;
     const leagueId   = parseInt(li[2], 10) || 0;
     const seasonYear = parseInt(targetDate.getFullYear(), 10);
 
-    // Skor & goller (Kesin Int)
-    const toInt = v => { const n = parseInt(v, 10); return isNaN(n) ? null : n; };
-    const homeGoals = toInt(m[31]);
-    const awayGoals = toInt(m[32]);
-    const htHome    = toInt(m[29]);
-    const htAway    = toInt(m[30]);
+    const toInt = v => { 
+        if (v === null || v === undefined || v === '') return null;
+        const n = parseInt(v, 10); 
+        return isNaN(n) ? null : n; 
+    };
+
+    // 🔥 SENİN TESPİT ETTİĞİN YER: GERÇEK MAÇ SONUCU (FT) SKORLARI 🔥
+    let homeGoals = toInt(m[12]);
+    let awayGoals = toInt(m[13]);
+    
+    // 🔥 "MS" YAZISINDAN SONRA GELEN İLK YARI (HT) SKORUNU PARÇALAMA 🔥
+    let htHome = null;
+    let htAway = null;
+    const htStr = typeof m[7] === 'string' ? m[7].replace(/\s/g, '') : '';
+    if (htStr.includes('-')) {
+        const parts = htStr.split('-');
+        htHome = toInt(parts[0]);
+        htAway = toInt(parts[1]);
+    }
+
+    // Kırmızı Kartlar (8 ve 9. indeksler)
+    const rcHome = toInt(m[8]) || 0;
+    const rcAway = toInt(m[9]) || 0;
 
     // Durum
     const statusCode = parseInt(m[5], 10) || 0;
@@ -217,7 +226,7 @@ function parseMatch(m, targetDate) {
             country:    countryName,
             logo:       null,
             flag:       null,
-            season:     seasonYear,    // INT (Önceden string gidebiliyordu, çökmeye sebep oluyordu)
+            season:     seasonYear,    // INT
             round:      'Regular Season',
             standings:  false
         },
@@ -226,13 +235,15 @@ function parseMatch(m, targetDate) {
                 id:     homeId,        // INT
                 name:   m[2] || "Unknown",
                 logo:   null,
-                winner: homeWin
+                winner: homeWin,
+                red_cards: rcHome
             },
             away: {
                 id:     awayId,        // INT
                 name:   m[4] || "Unknown",
                 logo:   null,
-                winner: awayWin
+                winner: awayWin,
+                red_cards: rcAway
             }
         },
         goals: {
@@ -245,7 +256,7 @@ function parseMatch(m, targetDate) {
             extratime: { home: null,      away: null      },
             penalty:   { home: null,      away: null      },
         },
-        events: [] // Senin attığın formata birebir uygun şekilde boş liste
+        events: [] 
     };
 }
 
