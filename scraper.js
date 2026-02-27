@@ -326,8 +326,7 @@ function fetchMatchDetails(matchId) {
     });
 }
 
-// 🔥 ROKET VERSİYONU (FLUTTER UYUMLU ANAHTARLARLA) 🔥
-// 🔥 ROKET VERSİYONU (SCOREPOP FLUTTER JSON YAPISINA %100 UYUMLU) 🔥
+// 🔥 ROKET VERSİYONU (FLUTTER ENUM ÇÖKMELERİNİ ÖNLEYEN KUSURSUZ YAPI) 🔥
 async function enrichMatchEvents(matches) {
     log(`\n🔍 Maç detayları (Events) çekiliyor... Toplam: ${matches.length} maç`);
     
@@ -339,6 +338,7 @@ async function enrichMatchEvents(matches) {
         await Promise.all(chunk.map(async (match) => {
             const matchId = match.fixture.id;
 
+            // Oynanmamış maçları es geç
             if (['NS', 'PST', 'CANC'].includes(match.fixture.status.short)) {
                 return;
             }
@@ -348,7 +348,7 @@ async function enrichMatchEvents(matches) {
             if (details && details.e && Array.isArray(details.e)) {
                 match.events = details.e.map(ev => {
                     const teamCode   = ev[0]; 
-                    const minute     = parseInt(ev[1], 10) || 0; // 🔥 Kesinlikle INT olmalı
+                    const minute     = parseInt(ev[1], 10) || 0; 
                     const playerName = ev[3] || '';
                     const typeCode   = ev[4];
                     const extra      = ev[5] || {};
@@ -357,26 +357,26 @@ async function enrichMatchEvents(matches) {
                     const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
                     const teamId   = teamCode === 1 ? match.teams.home.id : match.teams.away.id;
 
+                    // 🔥 İŞTE FLUTTER'I ÇÖKMEKTEN KURTARAN MÜDAHALE 🔥
                     let typeStr    = 'Other';
                     let detailStr  = '';
                     let assistName = null;
 
-                    // Olay Türünü ve Detayları Senin JSON Formatına Göre Ayarlama
                     if (typeCode === 1) {
                         typeStr = 'Goal';
                         detailStr = 'Normal Goal';
-                        if (extra.astName) assistName = `(${extra.astName})`; // Gollerde parantezli
-                    } else if (typeCode === 2) {
-                        typeStr = 'Yellow Card';
-                    } else if (typeCode === 3 || typeCode === 6) {
-                        typeStr = 'Red Card';
+                        if (extra.astName) assistName = `(${extra.astName})`;
+                    } else if (typeCode === 2 || typeCode === 3 || typeCode === 6) {
+                        // Sarı ve Kırmızı kartlar KESİNLİKLE "Other" olmalı, yoksa Flutter patlar!
+                        typeStr = 'Other';
+                        detailStr = '';
                     } else if (typeCode === 4) {
-                        typeStr = 'subst'; // Tam olarak uygulamanın beklediği "subst" değeri
+                        // Uygulaman "subst" kelimesini bekliyor
+                        typeStr = 'subst';
                         detailStr = 'Substitution';
-                        if (extra.sub) assistName = extra.sub; // Değişiklikte parantezsiz
+                        assistName = null; // Senin çalışan JSON'unda buralar hep null'dı
                     }
 
-                    // 🔥 SENİN JSON ŞABLONUNUN BİREBİR AYNISI 🔥
                     return {
                         minute: minute,
                         minuteExtra: null,
@@ -399,7 +399,7 @@ async function enrichMatchEvents(matches) {
     return matches;
 }
 
-// ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
+
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
 async function processDate(db, targetDate) {
     const dateStr = formatDate(targetDate);
