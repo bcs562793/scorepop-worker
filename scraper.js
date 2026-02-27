@@ -18,13 +18,14 @@ process.on('unhandledRejection', e => { logErr('💥 REJECTION:', e?.stack||e); 
 const args = Object.fromEntries(
     process.argv.slice(2).filter(a=>a.startsWith('--')).map(a=>a.slice(2).split('='))
 );
-const MODE      = args.mode || 'daily';
-const SINGLE    = args.date || null;
-const FROM_DATE = args.from || null;
-const TO_DATE   = args.to   || null;
+const MODE         = args.mode || 'daily';
+const SINGLE       = args.date || null;
+const FROM_DATE    = args.from || null;
+const TO_DATE      = args.to || null;
+const FETCH_DETAILS = args.details === 'true' || args.details === '1';
 
 log('🤖 ScorePop Botu Başlatılıyor...');
-log(`📋 Mod: ${MODE.toUpperCase()}${SINGLE ? ` | Tarih: ${SINGLE}` : ''}`);
+log(`📋 Mod: ${MODE.toUpperCase()}${SINGLE ? ` | Tarih: ${SINGLE}` : ''}${FETCH_DETAILS ? ' | Detaylar: EVET' : ''}`);
 log(`🔧 Node: ${process.version}`);
 
 // ─── FİREBASE ────────────────────────────────────────────────────────────────
@@ -108,6 +109,7 @@ async function navigateToDate(page, targetDate) {
     const steps = Math.abs(diff);
 
     for (let i = 0; i < steps; i++) {
+        // 🔥 BURASI DÜZELTİLDİ: Artık her tıklamada sabırla bekliyor, tıklamalar yutulmayacak 🔥
         try {
             await Promise.all([
                 page.waitForResponse(r=>r.status()===200&&(r.url().includes('feed')||r.url().includes('event')),{timeout:10000}).catch(()=>null),
@@ -116,12 +118,12 @@ async function navigateToDate(page, targetDate) {
         } catch(_) { 
             await clickArrow(page, dir); 
         }
-        await sleep(2000); 
+        await sleep(2000); // 800ms çok hızlıydı, 2 saniye tam ideal
         log(`    🔄 Adım ${i+1}/${steps} tamamlandı.`);
     }
     
     log(`  ⏳ Tarihe inildi, sayfa renderlanıyor...`);
-    await sleep(4000); 
+    await sleep(4000); // 482 maçın ekrana çizilmesi için son bir soluklanma
     const final = await getPageDate(page);
     log(`  ✅ Navigasyon bitti. Sayfada: ${final||'?'}`);
 }
@@ -141,190 +143,400 @@ async function collectMatches(page, targetDate) {
     await sleep(2000);
 
     return page.evaluate((dateStr, timestamp, seasonYear) => {
-
-        function parseHeaderElement(el) {
-            const typeEl = el.querySelector('.event__title--type');
-            const nameEl = el.querySelector('.event__title--name');
-
-            if (typeEl && nameEl) {
-                let country = typeEl.textContent.replace(/:/g, '').trim();
-                let name = nameEl.textContent.trim();
-                return { country, name };
-            }
-
-            const titleDiv = el.querySelector('.event__title');
-            if (titleDiv) {
-                const clone = titleDiv.cloneNode(true);
-                const tabs = clone.querySelectorAll('.event__tabs, a');
-                tabs.forEach(t => t.remove());
-
-                const text = clone.textContent.trim().replace(/\s+/g, ' ');
-                const parts = text.split(':');
-                if (parts.length > 1) {
-                    return { country: parts[0].trim(), name: parts[1].trim() };
-                }
-                return { country: "Unknown", name: text };
-            }
-
-            return { country: "Unknown", name: "Unknown League" };
-        }
-
-        function leagueHash(n) {
-            let h=0; for(let i=0;i<n.length;i++) h=n.charCodeAt(i)+((h<<5)-h); return Math.abs(h);
-        }
-
-        const rows = document.querySelectorAll(
-            '.headerLeague__wrapper, .event__header, [class*="headerLeague"], .event__match'
-        );
-
         const results = [];
         let league = { id:0, name:'Unknown League', country:'Unknown' };
 
+        // 🔥 YENİ SİSTEM: Hem headerLeague hem event__header class'larını tarar 🔥
+        const rows = document.querySelectorAll('.headerLeague, .event__header, .event__match, [id^="g_1_"]');
+
         rows.forEach(el => {
             const cls = (el.className?.toString() || '').toLowerCase();
+            const id = el.id || '';
 
-            if (cls.includes('headerleague') || (cls.includes('header') && !cls.includes('match'))) {
-                const parsed = parseHeaderElement(el);
-                if (parsed.name && parsed.name !== 'Unknown League') {
-                    league = { id: leagueHash(parsed.name), name: parsed.name, country: parsed.country };
+            const isMatch = cls.includes('match') || id.startsWith('g_1_');
+            const isHeader = !isMatch && (cls.includes('headerleague') || cls.includes('event__header'));
+
+            // ── LİG BAŞLIĞI İŞLEME ──
+            if (isHeader) {
+                // SENİN GÖNDERDİĞİN HTML'DEKİ GERÇEK CLASS'LAR (Flashscore'un yeni yapısı)
+                const nameEl = el.querySelector('.headerLeague__title-text, .event__title--name');
+                const countryEl = el.querySelector('.headerLeague__category-text, .event__title--type');
+
+                if (nameEl) {
+                    league.name = nameEl.textContent.trim();
+                    league.country = countryEl ? countryEl.textContent.replace(/:/g, '').trim() : "Unknown";
+                } else {
+                    // Güvenlik Duvarı (Ne olur ne olmaz)
+                    const clone = el.cloneNode(true);
+                    clone.querySelectorAll('a, button, .event__tabs, svg, .headerLeague__actions').forEach(e => e.remove());
+                    const lines = clone.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
+                    
+                    if (lines.length >= 2) {
+                        league.country = lines[0].replace(/:/g, '').trim();
+                        league.name = lines[1];
+                    } else if (lines.length === 1) {
+                        league.name = lines[0];
+                        league.country = "Unknown";
+                    }
                 }
+
+                // Lig adından ID üret
+                if (league.name === 'Unknown League' || league.name === '') return;
+                
+                let h=0;
+                for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
+                league.id = Math.abs(h);
                 return;
             }
 
-            if (!cls.includes('match')) return;
+            // ── MAÇ SATIRI İŞLEME ──
+            if (isMatch) {
+                const rawText = el.innerText || el.textContent;
+                if (!rawText) return;
 
-            const lines = el.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
-            if (lines.length < 5) return;
+                const lines = rawText.split('\n').map(l=>l.trim()).filter(Boolean);
+                if (lines.length < 5) return;
 
-            const status = lines[0];
-            let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
+                const status = lines[0];
+                let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
 
-            if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
+                // Kırmızı kart kayması
+                if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
 
-            if (!hs || !as_ || hs==='-' || as_==='-' ||
-                isNaN(parseInt(hs)) || isNaN(parseInt(as_)) ||
-                !isNaN(parseInt(status.charAt(0)))) return;
+                if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
 
-            const h   = parseInt(hs)||0;
-            const a   = parseInt(as_)||0;
-            
-            // 🔥 SENİN KODUNA YAPTIĞIM TEK EKLEME 1: Gerçek ID'yi saklamak 🔥
-            const raw = el.id ? el.id.replace('g_1_','') : '';
-            const id  = raw
-                ? (parseInt(raw,36) || raw.split('').reduce((s,c)=>s+c.charCodeAt(0),0))
-                : Math.floor(Math.random()*1e6);
+                const h   = parseInt(hs);
+                const a   = parseInt(as_);
+                const matchId = id ? (parseInt(id.replace('g_1_',''),36) || Math.floor(Math.random()*1e6)) : Math.floor(Math.random()*1e6);
 
-            results.push({
-                fixture: {
-                    id, 
-                    raw_id: raw, // Alt sayfaya inmek için gerekli
-                    referee:null, timezone:'Europe/Istanbul',
-                    date:`${dateStr}T20:00:00+03:00`, timestamp,
-                    periods:{first:null,second:null},
-                    venue:{id:null,name:null,city:null},
-                    status:{long:'Match Finished',short:'FT',elapsed:90,extra:null}
-                },
-                league: {
-                    id:league.id, name:league.name, country:league.country,
-                    logo:null, flag:null, season:seasonYear,
-                    round:'Regular Season', standings:false
-                },
-                teams: {
-                    home: { id:0, name:home, logo:null, winner: h>a ? true : (h===a ? null : false) },
-                    away: { id:0, name:away, logo:null, winner: a>h ? true : (h===a ? null : false) }
-                },
-                goals: { home:h, away:a },
-                score: {
-                    halftime:  { home:null, away:null },
-                    fulltime:  { home:h,    away:a    },
-                    extratime: { home:null, away:null  },
-                    penalty:   { home:null, away:null  }
-                }
-            });
+                results.push({
+                    fixture: {
+                        id: matchId, referee:null, timezone:'Europe/Istanbul',
+                        date:`${dateStr}T20:00:00+03:00`, timestamp,
+                        periods:{first:null,second:null},
+                        venue:{id:null,name:null,city:null},
+                        status:{long:'Match Finished',short:'FT',elapsed:90,extra:null}
+                    },
+                    league: {
+                        id:league.id, name:league.name, country:league.country,
+                        logo:null, flag:null, season:seasonYear,
+                        round:'Regular Season', standings:false
+                    },
+                    teams: {
+                        home: { id:0, name:home, logo:null, winner: h>a ? true : (h===a ? null : false) },
+                        away: { id:0, name:away, logo:null, winner: a>h ? true : (h===a ? null : false) }
+                    },
+                    goals: { home:h, away:a },
+                    score: {
+                        halftime:  { home:null, away:null },
+                        fulltime:  { home:h,    away:a    },
+                        extratime: { home:null, away:null  },
+                        penalty:   { home:null, away:null  }
+                    }
+                });
+            }
         });
 
         return results;
-
     }, dateStr, timestamp, seasonYear);
 }
 
-// 🔥 SENİN KODUNA YAPTIĞIM TEK EKLEME 2: Logoları Çekmek 🔥
-async function enrichLogos(browser, matches) {
-    log(`\n🔍 LOGOLAR ÇEKİLİYOR: ${matches.length} maç işlenecek...`);
-    
-    const detailPage = await browser.newPage();
-    await detailPage.setRequestInterception(true);
-    // Logoları (image) engellemiyoruz, sadece gereksiz font/videoları engelliyoruz
-    detailPage.on('request', r => ['font','media'].includes(r.resourceType()) ? r.abort() : r.continue());
+// ─── MAÇ DETAYLARINI TOPLA ─────────────────────────────────────────────────
+async function collectMatchDetails(page, matchId) {
+    // Maç detay sayfasına git
+    const detailUrl = `https://www.flashscore.com.tr/mac/futbol/${matchId}/`;
+    log(`  🔗 Detay sayfası: ${detailUrl}`);
 
-    for (let i = 0; i < matches.length; i++) {
-        const match = matches[i];
-        const rawId = match.fixture.raw_id; 
+    try {
+        await page.goto(detailUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await sleep(3000); // Sayfa yüklensin
 
-        if (!rawId) continue;
-
-        log(`  ⏳ [${i+1}/${matches.length}] Logo aranıyor: ${match.teams.home.name} vs ${match.teams.away.name}`);
+        // Çerez popup'ı varsa kabul et
         try {
-            // Maçın özet sayfasına git
-            await detailPage.goto(`https://www.flashscore.com.tr/mac/${rawId}/#mac-ozeti`, {waitUntil: 'domcontentloaded', timeout: 15000});
-            
-            // Ekranda takım logolarının (.participant__image) belirmesini bekle
-            await detailPage.waitForSelector('.participant__image', {timeout: 4000}).catch(()=>null);
+            await page.waitForSelector('#onetrust-accept-btn-handler', { timeout: 3000 });
+            await page.click('#onetrust-accept-btn-handler');
+            await sleep(500);
+        } catch (_) {}
 
-            const logos = await detailPage.evaluate(() => {
-                const imgs = document.querySelectorAll('.participant__image');
-                return {
-                    home: imgs[0] ? imgs[0].src : null,
-                    away: imgs[1] ? imgs[1].src : null
-                };
+        const details = await page.evaluate((matchId) => {
+            const result = {
+                events: [],
+                stats: {},
+                info: {},
+                logos: { home: null, away: null }
+            };
+
+            // ── TAKIM LOGOLARI ──
+            const logoEls = document.querySelectorAll('.participant__image, .tournamentHeader .logo img, .duelParticipant img');
+            logoEls.forEach((img, idx) => {
+                if (img.src && img.src.includes('static.flashscore')) {
+                    if (idx === 0) result.logos.home = img.src;
+                    else if (idx === 1) result.logos.away = img.src;
+                }
             });
 
-            // Logoları maça kaydet
-            match.teams.home.logo = logos.home;
-            match.teams.away.logo = logos.away;
+            // Alternatif logo bulma
+            const allLogos = document.querySelectorAll('img[src*="static.flashscore"]');
+            const teamLogos = Array.from(allLogos).filter(img =>
+                img.alt && img.alt.length > 0 && !img.alt.includes('logo', 0)
+            );
+            if (teamLogos.length >= 2) {
+                result.logos.home = teamLogos[0].src;
+                result.logos.away = teamLogos[1].src;
+            }
 
-        } catch (err) {
-            log(`  ⚠️ [${rawId}] Logo çekilemedi: ${err.message}`);
-        }
-        
-        await sleep(500); // Banlanmamak için iki maç arasında yarım saniye nefes al
+            // ── MAÇ OLAYLARI (Events) ──
+            // Özet sekmesi içindeki olayları bul
+            const eventSections = document.querySelectorAll('.smv__verticalSections, .tabContent__match-summary, [class*="match-summary"]');
+
+            eventSections.forEach(section => {
+                const incidents = section.querySelectorAll('.smv__incident, .incident__row, [class*="incident"]');
+
+                incidents.forEach(inc => {
+                    const timeEl = inc.querySelector('.smv__timeBox, .incident__time, [class*="timeBox"]');
+                    const time = timeEl ? timeEl.textContent.trim().replace("'", "") : null;
+
+                    if (!time) return;
+
+                    // Gol ikonu var mı?
+                    const goalIcon = inc.querySelector('[class*="goal"], .incidents-goal-soccer, svg[class*="goal"]');
+                    // Kart ikonu var mı?
+                    const cardIcon = inc.querySelector('.card-ico, [class*="card"], svg[class*="card"]');
+                    // Değişiklik ikonu var mı?
+                    const subIcon = inc.querySelector('[class*="substitution"], .wcl-icon-incidents-substitution');
+
+                    // Oyuncu ismi
+                    const playerEl = inc.querySelector('.smv__playerName a, .incident__player a, [class*="playerName"] a, [class*="playerName"]');
+                    const playerName = playerEl ? playerEl.textContent.trim() : null;
+
+                    // Asist
+                    const assistEl = inc.querySelector('.smv__assist, .incident__assist, [class*="assist"]');
+                    const assist = assistEl ? assistEl.textContent.replace(/[()]/g, '').trim() : null;
+
+                    // Skor (gol ise)
+                    const scoreEl = inc.querySelector('.smv__incidentAwayScore, .smv__incidentHomeScore, [class*="incidentScore"]');
+                    const score = scoreEl ? scoreEl.textContent.trim() : null;
+
+                    // Takım (home/away)
+                    const row = inc.closest('.smv__homeParticipant, .smv__awayParticipant, [class*="homeParticipant"], [class*="awayParticipant"]');
+                    let team = 'home';
+                    if (row && (row.className.includes('away') || row.className.includes('Deplasman'))) {
+                        team = 'away';
+                    }
+
+                    if (goalIcon && playerName) {
+                        result.events.push({
+                            type: 'goal',
+                            minute: parseInt(time) || time,
+                            player: playerName,
+                            assist: assist,
+                            score: score,
+                            team: team
+                        });
+                    } else if (cardIcon && playerName) {
+                        const isRed = cardIcon.className.includes('red') || inc.innerHTML.includes('#dc0000');
+                        result.events.push({
+                            type: isRed ? 'redCard' : 'yellowCard',
+                            minute: parseInt(time) || time,
+                            player: playerName,
+                            team: team
+                        });
+                    } else if (subIcon && playerName) {
+                        // Değişiklik: Giren ve çıkan oyuncuları bul
+                        const outEl = inc.querySelector('.smv__subDown, .incident__out, [class*="subDown"]');
+                        const inEl = inc; // current player is the one coming in
+
+                        result.events.push({
+                            type: 'substitution',
+                            minute: parseInt(time) || time,
+                            playerIn: playerName,
+                            playerOut: outEl ? outEl.textContent.trim() : null,
+                            team: team
+                        });
+                    }
+                });
+            });
+
+            // ── İSTATİSTİKLER ──
+            const statRows = document.querySelectorAll('.wcl-row_2oCpS, .stat__row, [class*="statistics"] .row, [data-testid="wcl-statistics"]');
+
+            statRows.forEach(row => {
+                const categoryEl = row.querySelector('.wcl-category_6sT1J, .stat__category-name, [class*="category"]');
+                const homeValEl = row.querySelector('.wcl-homeValue_3Q-7P, .stat__home-value, [class*="homeValue"]');
+                const awayValEl = row.querySelector('.wcl-awayValue_Y-QR1, .stat__away-value, [class*="awayValue"]');
+
+                if (categoryEl && homeValEl && awayValEl) {
+                    const category = categoryEl.textContent.trim();
+                    const homeVal = homeValEl.textContent.trim();
+                    const awayVal = awayValEl.textContent.trim();
+
+                    // Kategori ismine göre normalize et
+                    let statKey = category.toLowerCase();
+
+                    if (statKey.includes('topa sahip') || statKey.includes('possession')) {
+                        result.stats.ballPossession = {
+                            home: parseInt(homeVal) || parseInt(homeVal.replace('%', '')),
+                            away: parseInt(awayVal) || parseInt(awayVal.replace('%', ''))
+                        };
+                    } else if (statKey.includes('gol beklentisi') || statKey.includes('xG')) {
+                        result.stats.xg = {
+                            home: parseFloat(homeVal),
+                            away: parseFloat(awayVal)
+                        };
+                    } else if (statKey.includes('toplam şut') || statKey.includes('shots')) {
+                        result.stats.totalShots = {
+                            home: parseInt(homeVal),
+                            away: parseInt(awayVal)
+                        };
+                    } else if (statKey.includes('isabetli şut') || statKey.includes('shots on target')) {
+                        result.stats.shotsOnTarget = {
+                            home: parseInt(homeVal),
+                            away: parseInt(awayVal)
+                        };
+                    } else if (statKey.includes('korner') || statKey.includes('corner')) {
+                        result.stats.corners = {
+                            home: parseInt(homeVal),
+                            away: parseInt(awayVal)
+                        };
+                    } else if (statKey.includes('faul') || statKey.includes('foul')) {
+                        result.stats.fouls = {
+                            home: parseInt(homeVal),
+                            away: parseInt(awayVal)
+                        };
+                    } else if (statKey.includes('ofsayt') || statKey.includes('offside')) {
+                        result.stats.offsides = {
+                            home: parseInt(homeVal),
+                            away: parseInt(awayVal)
+                        };
+                    } else if (statKey.includes('sarı kart') || statKey.includes('yellow card')) {
+                        result.stats.yellowCards = {
+                            home: parseInt(homeVal),
+                            away: parseInt(awayVal)
+                        };
+                    } else if (statKey.includes('kırmızı kart') || statKey.includes('red card')) {
+                        result.stats.redCards = {
+                            home: parseInt(homeVal),
+                            away: parseInt(awayVal)
+                        };
+                    } else if (statKey.includes('pas') || statKey.includes('pass')) {
+                        result.stats.passes = {
+                            home: parseInt(homeVal.replace('%', '')),
+                            away: parseInt(awayVal.replace('%', ''))
+                        };
+                    }
+                }
+            });
+
+            // ── MAÇ BİLGİLERİ ──
+            const infoLabels = document.querySelectorAll('.wcl-infoLabelWrapper_DXbvw, .matchInfo__label, [class*="infoLabel"]');
+
+            infoLabels.forEach(label => {
+                const text = label.textContent.toLowerCase();
+                const valueEl = label.nextElementSibling || label.parentElement?.querySelector('.wcl-infoValue_grawU, [class*="infoValue"]');
+                const value = valueEl ? valueEl.textContent.trim() : null;
+
+                if (!value) return;
+
+                if (text.includes('hakem') || text.includes('referee')) {
+                    result.info.referee = value;
+                } else if (text.includes('stat') || text.includes('venue')) {
+                    result.info.venue = value;
+                } else if (text.includes('kapasite') || text.includes('capacity')) {
+                    result.info.capacity = parseInt(value.replace(/[^0-9]/g, ''));
+                } else if (text.includes('seyirci') || text.includes('attendance')) {
+                    result.info.attendance = parseInt(value.replace(/[^0-9]/g, ''));
+                }
+            });
+
+            // TV Kanalları
+            const tvLinks = document.querySelectorAll('.wcl-tvStationLink_a38PB, a[href*="tv"], [class*="tvChannel"] a');
+            if (tvLinks.length > 0) {
+                result.info.tvChannels = Array.from(tvLinks).map(a => ({
+                    name: a.textContent.trim(),
+                    url: a.href
+                }));
+            }
+
+            return result;
+        }, matchId);
+
+        log(`  ✓ Events: ${details.events.length}, Stats: ${Object.keys(details.stats).length}, Info keys: ${Object.keys(details.info).length}`);
+        return details;
+
+    } catch (e) {
+        log(`  ⚠️ Detay alınamadı: ${e.message}`);
+        return null;
     }
-
-    await detailPage.close();
-    return matches;
 }
 
 // ─── FİRESTORE ───────────────────────────────────────────────────────────────
 async function saveToFirestore(db, dateStr, matches) {
-    // Veritabanını kirletmesin diye sadece botun kullandığı raw_id'yi siliyoruz
-    matches.forEach(m => { if(m.fixture) delete m.fixture.raw_id; });
-
     await db.collection('archive_matches').doc(dateStr).set({
         fixtures:      matches,
         last_updated:  new Date().toISOString(),
         total_matches: matches.length,
     }, { merge: true });
 
-    log(`  ✅ ${matches.length} maç logolarıyla beraber → archive_matches/${dateStr} klasörüne yazıldı!`);
+    log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}`);
     const leagues = [...new Set(matches.map(m=>`${m.league.country}: ${m.league.name}`))];
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0,6).join(' | ')}${leagues.length>6?` +${leagues.length-6}`:''}`);
 }
 
 // ─── TEK GÜN ─────────────────────────────────────────────────────────────────
-async function processDate(browser, page, db, targetDate) { // Browser eklendi
+async function processDate(page, db, targetDate, fetchDetails = false) {
     const dateStr = formatDate(targetDate);
     log(`\n📆 İşleniyor: ${dateStr}`);
     await navigateToDate(page, targetDate);
     log('⚽ Maçlar toplanıyor...');
-    
-    let matches = await collectMatches(page, targetDate); // let olarak değiştirildi
-    
+    const matches = await collectMatches(page, targetDate);
     log(`🏆 ${matches.length} bitmiş maç.`);
+
+    // Detaylı maç bilgileri isteniyorsa (--details flag ile)
+    if (fetchDetails && matches.length > 0) {
+        log(`🔍 Maç detayları çekiliyor (${matches.length} maç)...`);
+
+        // Her maç için detay sayfasına git
+        for (let i = 0; i < matches.length; i++) {
+            const match = matches[i];
+            const matchId = match.fixture?.id || match.id;
+
+            if (!matchId) {
+                log(`  ⚠️ Maç ID yok, detay atlanıyor: ${i + 1}/${matches.length}`);
+                continue;
+            }
+
+            log(`  📥 Maç ${i + 1}/${matches.length}: ${match.teams?.home?.name} vs ${match.teams?.away?.name}`);
+
+            try {
+                const details = await collectMatchDetails(page, matchId);
+                if (details) {
+                    // Detayları match objesine ekle
+                    match.details = details;
+
+                    // Takım logolarını güncelle
+                    if (details.logos?.home) {
+                        if (!match.teams) match.teams = {};
+                        if (!match.teams.home) match.teams.home = {};
+                        match.teams.home.logo = details.logos.home;
+                    }
+                    if (details.logos?.away) {
+                        if (!match.teams) match.teams = {};
+                        if (!match.teams.away) match.teams.away = {};
+                        match.teams.away.logo = details.logos.away;
+                    }
+                }
+            } catch (e) {
+                log(`  ⚠️ Detay hatası: ${e.message}`);
+            }
+
+            // Anti-ban: Rastgele bekleme
+            const waitTime = 1500 + Math.random() * 2000;
+            await sleep(waitTime);
+        }
+        log(`✅ Tüm maç detayları tamamlandı.`);
+    }
+
     if (matches.length > 0) {
-        
-        // 🔥 SENİN KODUNA YAPTIĞIM TEK EKLEME 3: Kaydetmeden önce logoları bul 🔥
-        matches = await enrichLogos(browser, matches);
-        
         await saveToFirestore(db, dateStr, matches);
     } else {
         const c = await page.evaluate(()=>document.querySelectorAll('.event__match').length);
@@ -376,10 +588,10 @@ async function processDate(browser, page, db, targetDate) { // Browser eklendi
         if (MODE==='daily') {
             const y = getYesterday();
             log(`📅 TR dün: ${formatDate(y)}`);
-            await processDate(browser, page, db, y);
+            await processDate(page, db, y, FETCH_DETAILS);
         } else if (MODE==='single') {
             if (!SINGLE) throw new Error('--date gerekli!');
-            await processDate(browser, page, db, parseTargetDate(SINGLE));
+            await processDate(page, db, parseTargetDate(SINGLE), FETCH_DETAILS);
         } else if (MODE==='backfill') {
             if (!FROM_DATE||!TO_DATE) throw new Error('--from ve --to gerekli!');
             const start = parseTargetDate(FROM_DATE);
@@ -389,7 +601,7 @@ async function processDate(browser, page, db, targetDate) { // Browser eklendi
             for (let i=0; i<total; i++) {
                 const d = new Date(start);
                 d.setUTCDate(start.getUTCDate()+i);
-                await processDate(browser, page, db, d);
+                await processDate(page, db, d, FETCH_DETAILS);
                 if (i<total-1) await sleep(3000+Math.random()*2000);
             }
         }
