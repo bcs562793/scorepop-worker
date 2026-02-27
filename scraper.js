@@ -284,53 +284,31 @@ async function enrichMatchData(browser, matches) {
         if (!rawId) continue;
         log(`  ⏳ [${i+1}/${matches.length}] ${match.teams.home.name} vs ${match.teams.away.name}`);
         try {
+            // ── 1. ÖZET (events + logolar) ──
             await detailPage.goto(`https://www.flashscore.com.tr/mac/${rawId}#mac-ozeti`, {waitUntil:'domcontentloaded', timeout:15000});
             await detailPage.waitForSelector('.participant__image', {timeout:5000}).catch(()=>null);
-            // Events yüklensin diye biraz bekle
             await new Promise(r => setTimeout(r, 1500));
 
             const data = await detailPage.evaluate((homeTeamName, awayTeamName) => {
-                // ── LOGOLAR ──
                 const imgs = document.querySelectorAll('.participant__image');
                 const src = img => (img && img.src && img.src.startsWith('http')) ? img.src : null;
                 const homeLogo = src(imgs[0]);
                 const awayLogo = src(imgs[1]);
-
-                // ── TAKIMI BELIRLE ──
-                // Üst kısımdaki takım isimlerini referans alıyoruz
-                const participants = document.querySelectorAll('.participant__participantName');
-                const homeNameEl = participants[0]?.textContent?.trim() || homeTeamName;
-                const awayNameEl = participants[1]?.textContent?.trim() || awayTeamName;
-
-                // ── EVENTS (MAÇ ÖZET OLAYLARI) ──
                 const events = [];
-                // Flashscore özet olayları .smv__incident class'ında
                 document.querySelectorAll('.smv__incident').forEach(el => {
                     const cls = (el.className || '').toLowerCase();
-
-                    // Dakika
                     const minEl = el.querySelector('.smv__timeBox');
                     const minuteRaw = minEl ? minEl.textContent.trim().replace("'","") : null;
                     const minuteParts = minuteRaw ? minuteRaw.split('+') : [];
                     const minute = minuteParts[0] ? parseInt(minuteParts[0]) : null;
                     const minuteExtra = minuteParts[1] ? parseInt(minuteParts[1]) : null;
-
-                    // Oyuncu adı
                     const playerEl = el.querySelector('.smv__playerName, .smv__incidentPlayerName');
                     const playerName = playerEl ? playerEl.textContent.trim() : null;
-
-                    // Asist / giren oyuncu
                     const assistEl = el.querySelector('.smv__assist, .smv__incidentSubPlayerName');
                     const assistName = assistEl ? assistEl.textContent.trim().replace('↳','').trim() : null;
-
-                    // Olay tipi ve detayı — icon class'ından çıkar
-                    // data-testid ile tip tespiti (örn: "wcl-icon-incidents-goal-soccer")
                     const iconSvg = el.querySelector('[data-testid]');
                     const testId = iconSvg ? (iconSvg.getAttribute('data-testid') || '') : '';
-
-                    let type = 'Other';
-                    let detail = '';
-
+                    let type = 'Other'; let detail = '';
                     if (testId.includes('goal')) {
                         type = 'Goal'; detail = 'Normal Goal';
                         if (testId.includes('penalty')) detail = 'Penalty';
@@ -346,38 +324,98 @@ async function enrichMatchData(browser, matches) {
                     } else if (testId.includes('var')) {
                         type = 'Var'; detail = 'VAR Decision';
                     }
-
-                    if (minute === null && playerName === null) return; // Boş satır
-
-                    // Hangi takım? — elementin sol/sağ pozisyonuna bak
-                    // Flashscore'da ev sahibi olayları solda, deplasman sağda
-                    const isHomeEl = el.querySelector('.smv__homeParticipant, [class*="home"]');
+                    if (minute === null && playerName === null) return;
                     const isAwayEl = el.querySelector('.smv__awayParticipant, [class*="away"]');
-                    // Fallback: parent'ın class'ına bak
+                    const isHomeEl = el.querySelector('.smv__homeParticipant, [class*="home"]');
                     const parentCls = (el.parentElement?.className || '').toLowerCase();
                     let teamSide = 'home';
                     if (isAwayEl && !isHomeEl) teamSide = 'away';
                     else if (parentCls.includes('away')) teamSide = 'away';
-
                     events.push({ minute, minuteExtra, type, detail, playerName, assistName, teamSide });
                 });
-
                 return { homeLogo, awayLogo, events };
             }, match.teams.home.name, match.teams.away.name);
 
-            // Logolar
             if (data.homeLogo) match.teams.home.logo = data.homeLogo;
             if (data.awayLogo) match.teams.away.logo = data.awayLogo;
-
-            // Events: teamSide → teamId dönüşümü
             match.events = data.events.map(ev => ({
                 ...ev,
                 teamId: ev.teamSide === 'home' ? match.teams.home.id : match.teams.away.id,
                 teamName: ev.teamSide === 'home' ? match.teams.home.name : match.teams.away.name,
             }));
-
             const evtCount = match.events.length;
             if (evtCount > 0) log(`    ⚡ ${evtCount} event (${data.events.filter(e=>e.type==='Goal').length} gol)`);
+
+            // ── 2. İSTATİSTİKLER ──
+            // İstatistikler aynı sayfada tab olarak — butona tıkla
+            await detailPage.goto(`https://www.flashscore.com.tr/mac/${rawId}#mac-ozeti`, {waitUntil:'domcontentloaded', timeout:15000});
+            await new Promise(r => setTimeout(r, 1000));
+            // İstatistikler tabına tıkla
+            await detailPage.evaluate(() => {
+                const tabs = document.querySelectorAll('[data-testid="wcl-tab"]');
+                for (const tab of tabs) {
+                    if (tab.textContent.trim().includes('statistik') || tab.textContent.trim().includes('İstatistik')) {
+                        tab.click(); break;
+                    }
+                }
+            });
+            await new Promise(r => setTimeout(r, 1500));
+            const statsData = await detailPage.evaluate(() => {
+                const stats = [];
+                // Her satır: data-testid="wcl-statistics"
+                document.querySelectorAll('[data-testid="wcl-statistics"]').forEach(row => {
+                    // Kategori adı
+                    const nameEl = row.querySelector('[data-testid="wcl-statistics-category"]');
+                    if (!nameEl) return;
+                    const name = nameEl.querySelector('[data-testid="wcl-scores-simple-text-01"]')?.textContent?.trim()
+                               || nameEl.textContent.trim();
+                    // Değerler — homeValue ve awayValue class'ına göre
+                    const valueEls = row.querySelectorAll('[data-testid="wcl-statistics-value"]');
+                    if (valueEls.length < 2) return;
+                    // İlk bold span = asıl değer (örn: "56%"), ikinci span = detay (örn: "(474/582)")
+                    const homeVal = valueEls[0].querySelector('[data-testid="wcl-scores-simple-text-01"]')?.textContent?.trim() || '';
+                    const awayVal = valueEls[1].querySelector('[data-testid="wcl-scores-simple-text-01"]')?.textContent?.trim() || '';
+                    if (name && homeVal && awayVal) {
+                        stats.push({ type: name, homeVal, awayVal });
+                    }
+                });
+                // Duplicate'leri temizle (aynı stat birden fazla section'da çıkıyor)
+                const seen = new Set();
+                return stats.filter(s => {
+                    if (seen.has(s.type)) return false;
+                    seen.add(s.type); return true;
+                });
+            });
+            match.stats = statsData;
+            if (statsData.length > 0) log(`    📊 ${statsData.length} stat`);
+
+            // ── 3. KADRO ──
+            await detailPage.goto(`https://www.flashscore.com.tr/mac/${rawId}#kadro`, {waitUntil:'domcontentloaded', timeout:15000});
+            await new Promise(r => setTimeout(r, 1500));
+            const lineupsData = await detailPage.evaluate(() => {
+                const parseTeam = (container) => {
+                    if (!container) return { formation: '', players: [], subs: [] };
+                    const formation = container.querySelector('[class*="formation"]')?.textContent?.trim() || '';
+                    const players = [];
+                    const subs = [];
+                    container.querySelectorAll('[class*="lineupTable__player"], [class*="lineup__player"]').forEach(el => {
+                        const name = el.querySelector('[class*="playerName"], [class*="player__name"]')?.textContent?.trim() || el.textContent.trim();
+                        const number = el.querySelector('[class*="playerNumber"], [class*="player__number"]')?.textContent?.trim() || '';
+                        const isSub = el.closest('[class*="substitute"], [class*="subs"]') !== null;
+                        const player = { name, number: parseInt(number) || null };
+                        if (isSub) subs.push(player);
+                        else players.push(player);
+                    });
+                    return { formation, players, subs };
+                };
+                const containers = document.querySelectorAll('[class*="lineupTable"], [class*="lineup__table"]');
+                const home = parseTeam(containers[0]);
+                const away = parseTeam(containers[1]);
+                return { home, away };
+            });
+            match.lineups = lineupsData;
+            const totalPlayers = (lineupsData.home?.players?.length || 0) + (lineupsData.away?.players?.length || 0);
+            if (totalPlayers > 0) log(`    👕 kadro: ${totalPlayers} oyuncu`);
 
         } catch(err) {
             log(`  ⚠️ [${rawId}] Detay çekilemedi: ${err.message}`);
