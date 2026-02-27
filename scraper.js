@@ -133,13 +133,19 @@ async function collectMatches(page, targetDate) {
     const timestamp  = Math.floor(targetDate.getTime() / 1000);
     const seasonYear = targetDate.getFullYear();
 
+    // Yavaş scroll → lazy-load tetiklensin, logolar src'ye yazılsın
     await page.evaluate(async () => {
         await new Promise(r => {
-            let p=0; const t = setInterval(()=>{ window.scrollBy(0,800); p+=800;
-                if(p>=document.body.scrollHeight){clearInterval(t);r();} }, 200);
+            let p = 0;
+            const t = setInterval(() => {
+                window.scrollBy(0, 400);
+                p += 400;
+                if (p >= document.body.scrollHeight) { clearInterval(t); r(); }
+            }, 300);
         });
+        window.scrollTo(0, 0);
     });
-    await sleep(2000);
+    await sleep(3000); // Lazy yüklenen logoların DOM'a yazılmasını bekle
 
     return page.evaluate((dateStr, timestamp, seasonYear) => {
         const results = [];
@@ -209,12 +215,16 @@ async function collectMatches(page, targetDate) {
                 const matchId = id ? (parseInt(id.replace('g_1_',''),36) || Math.floor(Math.random()*1e6)) : Math.floor(Math.random()*1e6);
 
                 // ── LOGO & MAÇ URL ──
-                const linkEl  = el.querySelector('a.eventRowLink');
-                const matchUrl = linkEl ? linkEl.href : null;
+                const linkEl   = el.querySelector('a.eventRowLink');
+                const matchUrl = linkEl ? linkEl.getAttribute('href') : null;
 
-                const logos = el.querySelectorAll('img.participant__image');
-                const homeLogo = logos[0] ? logos[0].src : null;
-                const awayLogo = logos[1] ? logos[1].src : null;
+                // Lazy-load: src veya data-src hangisi doluysa onu al
+                const getLogo = img => img
+                    ? (img.getAttribute('src') || img.getAttribute('data-src') || img.dataset.src || null)
+                    : null;
+                const imgEls   = el.querySelectorAll('img.participant__image');
+                const homeLogo = getLogo(imgEls[0]);
+                const awayLogo = getLogo(imgEls[1]);
 
                 results.push({
                     fixture: {
@@ -300,12 +310,11 @@ async function processDate(page, db, targetDate) {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
     await page.emulateTimezone('Europe/Istanbul');
     await page.setRequestInterception(true);
-    // Flashscore statik CDN'inden gelen logo görsellerine izin ver (src atanabilsin), diğerlerini engelle
+    // Logo CDN'ine izin ver (static.flashscore.com), diğer görselleri engelle
     page.on('request', r => {
-        if (r.resourceType() === 'image') {
+        if (r.resourceType() === 'image')
             return r.url().includes('static.flashscore.com') ? r.continue() : r.abort();
-        }
-        if (['font','media'].includes(r.resourceType())) return r.abort();
+        if (['font', 'media'].includes(r.resourceType())) return r.abort();
         r.continue();
     });
 
