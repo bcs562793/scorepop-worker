@@ -270,6 +270,8 @@ async function saveToFirestore(db, dateStr, matches) {
 async function enrichLogos(browser, matches) {
     log(`\n🔍 LOGOLAR ÇEKİLİYOR: ${matches.length} maç işlenecek...`);
     const detailPage = await browser.newPage();
+    // Ana sayfa ile aynı userAgent — Cloudflare botu tanımasın
+    await detailPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
     await detailPage.setRequestInterception(true);
     detailPage.on('request', r => ['font','media'].includes(r.resourceType()) ? r.abort() : r.continue());
 
@@ -280,16 +282,17 @@ async function enrichLogos(browser, matches) {
         log(`  ⏳ [${i+1}/${matches.length}] ${match.teams.home.name} vs ${match.teams.away.name}`);
         try {
             await detailPage.goto(`https://www.flashscore.com.tr/mac/${rawId}#mac-ozeti`, {waitUntil:'domcontentloaded', timeout:15000});
-            await detailPage.waitForSelector('.participant__image', {timeout:4000}).catch(()=>null);
+            await detailPage.waitForSelector('.participant__image', {timeout:5000}).catch(()=>null);
             const logos = await detailPage.evaluate(() => {
                 const imgs = document.querySelectorAll('.participant__image');
-                return {
-                    home: imgs[0] ? imgs[0].src : null,
-                    away: imgs[1] ? imgs[1].src : null
-                };
+                // src boş string olabilir → || null ile temizle
+                const src = img => (img && img.src && img.src.startsWith('http')) ? img.src : null;
+                return { home: src(imgs[0]), away: src(imgs[1]) };
             });
-            match.teams.home.logo = logos.home;
-            match.teams.away.logo = logos.away;
+            // İlk maçta debug: ne geldiğini logla
+            if (i === 0) log(`  🔍 DEBUG logo[0]: ${JSON.stringify(logos)}`);
+            if (logos.home) match.teams.home.logo = logos.home;
+            if (logos.away) match.teams.away.logo = logos.away;
         } catch(err) {
             log(`  ⚠️ [${rawId}] Logo çekilemedi: ${err.message}`);
         }
