@@ -324,25 +324,26 @@ async function enrichMatchData(browser, matches) {
                     const assistName = assistEl ? assistEl.textContent.trim().replace('↳','').trim() : null;
 
                     // Olay tipi ve detayı — icon class'ından çıkar
-                    const iconEl = el.querySelector('[class*="incident_ico"], [class*="smv__incidentIcon"]');
-                    const iconCls = iconEl ? (iconEl.className || '') : cls;
+                    // data-testid ile tip tespiti (örn: "wcl-icon-incidents-goal-soccer")
+                    const iconSvg = el.querySelector('[data-testid]');
+                    const testId = iconSvg ? (iconSvg.getAttribute('data-testid') || '') : '';
 
                     let type = 'Other';
                     let detail = '';
 
-                    if (iconCls.includes('soccer') || iconCls.includes('goal') || cls.includes('goal')) {
+                    if (testId.includes('goal')) {
                         type = 'Goal'; detail = 'Normal Goal';
-                        if (iconCls.includes('penalty') || cls.includes('penalty')) detail = 'Penalty';
-                        if (iconCls.includes('own') || cls.includes('own'))         detail = 'Own Goal';
-                    } else if (iconCls.includes('yellowRed') || iconCls.includes('yellow-red') || cls.includes('yellowred')) {
+                        if (testId.includes('penalty')) detail = 'Penalty';
+                        if (testId.includes('own'))     detail = 'Own Goal';
+                    } else if (testId.includes('yellowRed') || testId.includes('yellow-red')) {
                         type = 'Card'; detail = 'Yellow Red Card';
-                    } else if (iconCls.includes('yellow') || cls.includes('yellowcard')) {
+                    } else if (testId.includes('card-yellow') || testId.includes('yellowCard')) {
                         type = 'Card'; detail = 'Yellow Card';
-                    } else if (iconCls.includes('red') || cls.includes('redcard')) {
+                    } else if (testId.includes('card-red') || testId.includes('redCard')) {
                         type = 'Card'; detail = 'Red Card';
-                    } else if (iconCls.includes('subst') || cls.includes('substitution') || iconCls.includes('substitution')) {
+                    } else if (testId.includes('substitution') || testId.includes('subst')) {
                         type = 'subst'; detail = 'Substitution';
-                    } else if (iconCls.includes('var') || cls.includes('var')) {
+                    } else if (testId.includes('var')) {
                         type = 'Var'; detail = 'VAR Decision';
                     }
 
