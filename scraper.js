@@ -293,14 +293,7 @@ async function enrichLogos(browser, matches) {
                 const src = img => (img && img.src && img.src.startsWith('http')) ? img.src : null;
                 return { home: src(imgs[0]), away: src(imgs[1]) };
             });
-            // İlk maçta debug: URL ve sonucu logla
-            if (i === 0) {
-                const pageUrl = detailPage.url();
-                const imgCount = await detailPage.evaluate(() => document.querySelectorAll('.participant__image').length);
-                log(`  🔍 DEBUG URL: ${pageUrl}`);
-                log(`  🔍 DEBUG .participant__image sayısı: ${imgCount}`);
-                log(`  🔍 DEBUG logo[0]: ${JSON.stringify(logos)}`);
-            }
+
             if (logos.home) match.teams.home.logo = logos.home;
             if (logos.away) match.teams.away.logo = logos.away;
         } catch(err) {
