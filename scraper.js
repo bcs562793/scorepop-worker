@@ -85,44 +85,13 @@ async function getPageDate(page) {
 
 async function navigateToDate(page, targetDate) {
     const targetStr = formatDate(targetDate);
-    const rawPage   = await getPageDate(page);
-    log(`  📅 Hedef: ${targetStr} | Sayfada: ${rawPage||'okunamadı'}`);
+    log(`  📅 Hedef: ${targetStr} — direkt URL ile gidiliyor...`);
 
-    let current = null;
-    if (rawPage) {
-        const dm = rawPage.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
-        if (dm) current = new Date(`${dm[3]}-${dm[2].padStart(2,'0')}-${dm[1].padStart(2,'0')}T00:00:00Z`);
-        const im = rawPage.match(/(\d{4}-\d{2}-\d{2})/);
-        if (!current && im) current = new Date(im[1]+'T00:00:00Z');
-    }
-    if (!current) {
-        current = getTRToday();
-        log(`  ⚠️  Sayfa tarihi okunamadı, bugün varsayıldı: ${formatDate(current)}`);
-    }
+    // Takvim butonuyla gitmek yerine hash URL'e direkt git — 30x hızlı
+    await page.goto(`https://www.flashscore.com.tr/#${targetStr}`, {waitUntil:'domcontentloaded', timeout:30000});
+    await sleep(2000);
 
-    const diff  = Math.round((current - targetDate) / 86400000);
-    log(`  🔢 ${formatDate(current)} → ${targetStr} = ${diff} adım ${diff>0?'geri':diff<0?'ileri':'(aynı)'}`);
-    if (diff === 0) { log('  ✅ Zaten doğru tarih.'); return; }
-
-    const dir   = diff > 0 ? 'left' : 'right';
-    const steps = Math.abs(diff);
-
-    for (let i = 0; i < steps; i++) {
-        // 🔥 BURASI DÜZELTİLDİ: Artık her tıklamada sabırla bekliyor, tıklamalar yutulmayacak 🔥
-        try {
-            await Promise.all([
-                page.waitForResponse(r=>r.status()===200&&(r.url().includes('feed')||r.url().includes('event')),{timeout:10000}).catch(()=>null),
-                clickArrow(page, dir)
-            ]);
-        } catch(_) { 
-            await clickArrow(page, dir); 
-        }
-        await sleep(2000); // 800ms çok hızlıydı, 2 saniye tam ideal
-        log(`    🔄 Adım ${i+1}/${steps} tamamlandı.`);
-    }
-    
-    log(`  ⏳ Tarihe inildi, sayfa renderlanıyor...`);
-    await sleep(4000); // 482 maçın ekrana çizilmesi için son bir soluklanma
+    // Doğrulama
     const final = await getPageDate(page);
     log(`  ✅ Navigasyon bitti. Sayfada: ${final||'?'}`);
 }
