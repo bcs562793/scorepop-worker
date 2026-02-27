@@ -108,7 +108,6 @@ async function navigateToDate(page, targetDate) {
     const steps = Math.abs(diff);
 
     for (let i = 0; i < steps; i++) {
-        // 🔥 BURASI DÜZELTİLDİ: Artık her tıklamada sabırla bekliyor, tıklamalar yutulmayacak 🔥
         try {
             await Promise.all([
                 page.waitForResponse(r=>r.status()===200&&(r.url().includes('feed')||r.url().includes('event')),{timeout:10000}).catch(()=>null),
@@ -117,12 +116,12 @@ async function navigateToDate(page, targetDate) {
         } catch(_) { 
             await clickArrow(page, dir); 
         }
-        await sleep(2000); // 800ms çok hızlıydı, 2 saniye tam ideal
+        await sleep(2000); 
         log(`    🔄 Adım ${i+1}/${steps} tamamlandı.`);
     }
     
     log(`  ⏳ Tarihe inildi, sayfa renderlanıyor...`);
-    await sleep(4000); // 482 maçın ekrana çizilmesi için son bir soluklanma
+    await sleep(4000); 
     const final = await getPageDate(page);
     log(`  ✅ Navigasyon bitti. Sayfada: ${final||'?'}`);
 }
@@ -133,154 +132,199 @@ async function collectMatches(page, targetDate) {
     const timestamp  = Math.floor(targetDate.getTime() / 1000);
     const seasonYear = targetDate.getFullYear();
 
-    // Yavaş scroll → lazy-load tetiklensin, logolar src'ye yazılsın
     await page.evaluate(async () => {
         await new Promise(r => {
-            let p = 0;
-            const t = setInterval(() => {
-                window.scrollBy(0, 400);
-                p += 400;
-                if (p >= document.body.scrollHeight) { clearInterval(t); r(); }
-            }, 300);
+            let p=0; const t = setInterval(()=>{ window.scrollBy(0,800); p+=800;
+                if(p>=document.body.scrollHeight){clearInterval(t);r();} }, 200);
         });
-        window.scrollTo(0, 0);
     });
-    await sleep(3000); // Lazy yüklenen logoların DOM'a yazılmasını bekle
+    await sleep(2000);
 
     return page.evaluate((dateStr, timestamp, seasonYear) => {
+
+        function parseHeaderElement(el) {
+            const typeEl = el.querySelector('.event__title--type');
+            const nameEl = el.querySelector('.event__title--name');
+
+            if (typeEl && nameEl) {
+                let country = typeEl.textContent.replace(/:/g, '').trim();
+                let name = nameEl.textContent.trim();
+                return { country, name };
+            }
+
+            const titleDiv = el.querySelector('.event__title');
+            if (titleDiv) {
+                const clone = titleDiv.cloneNode(true);
+                const tabs = clone.querySelectorAll('.event__tabs, a');
+                tabs.forEach(t => t.remove());
+
+                const text = clone.textContent.trim().replace(/\s+/g, ' ');
+                const parts = text.split(':');
+                if (parts.length > 1) {
+                    return { country: parts[0].trim(), name: parts[1].trim() };
+                }
+                return { country: "Unknown", name: text };
+            }
+
+            return { country: "Unknown", name: "Unknown League" };
+        }
+
+        function leagueHash(n) {
+            let h=0; for(let i=0;i<n.length;i++) h=n.charCodeAt(i)+((h<<5)-h); return Math.abs(h);
+        }
+
+        const rows = document.querySelectorAll(
+            '.headerLeague__wrapper, .event__header, [class*="headerLeague"], .event__match'
+        );
+
         const results = [];
         let league = { id:0, name:'Unknown League', country:'Unknown' };
 
-        // 🔥 YENİ SİSTEM: Hem headerLeague hem event__header class'larını tarar 🔥
-        const rows = document.querySelectorAll('.headerLeague, .event__header, .event__match, [id^="g_1_"]');
-
         rows.forEach(el => {
             const cls = (el.className?.toString() || '').toLowerCase();
-            const id = el.id || '';
 
-            const isMatch = cls.includes('match') || id.startsWith('g_1_');
-            const isHeader = !isMatch && (cls.includes('headerleague') || cls.includes('event__header'));
-
-            // ── LİG BAŞLIĞI İŞLEME ──
-            if (isHeader) {
-                // SENİN GÖNDERDİĞİN HTML'DEKİ GERÇEK CLASS'LAR (Flashscore'un yeni yapısı)
-                const nameEl = el.querySelector('.headerLeague__title-text, .event__title--name');
-                const countryEl = el.querySelector('.headerLeague__category-text, .event__title--type');
-
-                if (nameEl) {
-                    league.name = nameEl.textContent.trim();
-                    league.country = countryEl ? countryEl.textContent.replace(/:/g, '').trim() : "Unknown";
-                } else {
-                    // Güvenlik Duvarı (Ne olur ne olmaz)
-                    const clone = el.cloneNode(true);
-                    clone.querySelectorAll('a, button, .event__tabs, svg, .headerLeague__actions').forEach(e => e.remove());
-                    const lines = clone.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
-                    
-                    if (lines.length >= 2) {
-                        league.country = lines[0].replace(/:/g, '').trim();
-                        league.name = lines[1];
-                    } else if (lines.length === 1) {
-                        league.name = lines[0];
-                        league.country = "Unknown";
-                    }
+            if (cls.includes('headerleague') || (cls.includes('header') && !cls.includes('match'))) {
+                const parsed = parseHeaderElement(el);
+                if (parsed.name && parsed.name !== 'Unknown League') {
+                    league = { id: leagueHash(parsed.name), name: parsed.name, country: parsed.country };
                 }
-
-                // Lig adından ID üret
-                if (league.name === 'Unknown League' || league.name === '') return;
-                
-                let h=0;
-                for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
-                league.id = Math.abs(h);
                 return;
             }
 
-            // ── MAÇ SATIRI İŞLEME ──
-            if (isMatch) {
-                const rawText = el.innerText || el.textContent;
-                if (!rawText) return;
+            if (!cls.includes('match')) return;
 
-                const lines = rawText.split('\n').map(l=>l.trim()).filter(Boolean);
-                if (lines.length < 5) return;
+            const lines = el.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
+            if (lines.length < 5) return;
 
-                const status = lines[0];
-                let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
+            const status = lines[0];
+            let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
 
-                // Kırmızı kart kayması
-                if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
+            if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
 
-                if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
+            if (!hs || !as_ || hs==='-' || as_==='-' ||
+                isNaN(parseInt(hs)) || isNaN(parseInt(as_)) ||
+                !isNaN(parseInt(status.charAt(0)))) return;
 
-                const h   = parseInt(hs);
-                const a   = parseInt(as_);
-                const matchId = id ? (parseInt(id.replace('g_1_',''),36) || Math.floor(Math.random()*1e6)) : Math.floor(Math.random()*1e6);
+            const h   = parseInt(hs)||0;
+            const a   = parseInt(as_)||0;
+            
+            // 🔥 SENİN KODUNA YAPTIĞIM TEK EKLEME 1: Gerçek ID'yi saklamak 🔥
+            const raw = el.id ? el.id.replace('g_1_','') : '';
+            const id  = raw
+                ? (parseInt(raw,36) || raw.split('').reduce((s,c)=>s+c.charCodeAt(0),0))
+                : Math.floor(Math.random()*1e6);
 
-                // ── LOGO & MAÇ URL ──
-                const linkEl   = el.querySelector('a.eventRowLink');
-                const matchUrl = linkEl ? linkEl.getAttribute('href') : null;
-
-                // Lazy-load: src veya data-src hangisi doluysa onu al
-                const getLogo = img => img
-                    ? (img.getAttribute('src') || img.getAttribute('data-src') || img.dataset.src || null)
-                    : null;
-                const imgEls   = el.querySelectorAll('img.participant__image');
-                const homeLogo = getLogo(imgEls[0]);
-                const awayLogo = getLogo(imgEls[1]);
-
-                results.push({
-                    fixture: {
-                        id: matchId, referee:null, timezone:'Europe/Istanbul',
-                        date:`${dateStr}T20:00:00+03:00`, timestamp,
-                        periods:{first:null,second:null},
-                        venue:{id:null,name:null,city:null},
-                        status:{long:'Match Finished',short:'FT',elapsed:90,extra:null},
-                        matchUrl: matchUrl
-                    },
-                    league: {
-                        id:league.id, name:league.name, country:league.country,
-                        logo:null, flag:null, season:seasonYear,
-                        round:'Regular Season', standings:false
-                    },
-                    teams: {
-                        home: { id:0, name:home, logo:homeLogo, winner: h>a ? true : (h===a ? null : false) },
-                        away: { id:0, name:away, logo:awayLogo, winner: a>h ? true : (h===a ? null : false) }
-                    },
-                    goals: { home:h, away:a },
-                    score: {
-                        halftime:  { home:null, away:null },
-                        fulltime:  { home:h,    away:a    },
-                        extratime: { home:null, away:null  },
-                        penalty:   { home:null, away:null  }
-                    }
-                });
-            }
+            results.push({
+                fixture: {
+                    id, 
+                    raw_id: raw, // Alt sayfaya inmek için gerekli
+                    referee:null, timezone:'Europe/Istanbul',
+                    date:`${dateStr}T20:00:00+03:00`, timestamp,
+                    periods:{first:null,second:null},
+                    venue:{id:null,name:null,city:null},
+                    status:{long:'Match Finished',short:'FT',elapsed:90,extra:null}
+                },
+                league: {
+                    id:league.id, name:league.name, country:league.country,
+                    logo:null, flag:null, season:seasonYear,
+                    round:'Regular Season', standings:false
+                },
+                teams: {
+                    home: { id:0, name:home, logo:null, winner: h>a ? true : (h===a ? null : false) },
+                    away: { id:0, name:away, logo:null, winner: a>h ? true : (h===a ? null : false) }
+                },
+                goals: { home:h, away:a },
+                score: {
+                    halftime:  { home:null, away:null },
+                    fulltime:  { home:h,    away:a    },
+                    extratime: { home:null, away:null  },
+                    penalty:   { home:null, away:null  }
+                }
+            });
         });
 
         return results;
+
     }, dateStr, timestamp, seasonYear);
+}
+
+// 🔥 SENİN KODUNA YAPTIĞIM TEK EKLEME 2: Logoları Çekmek 🔥
+async function enrichLogos(browser, matches) {
+    log(`\n🔍 LOGOLAR ÇEKİLİYOR: ${matches.length} maç işlenecek...`);
+    
+    const detailPage = await browser.newPage();
+    await detailPage.setRequestInterception(true);
+    // Logoları (image) engellemiyoruz, sadece gereksiz font/videoları engelliyoruz
+    detailPage.on('request', r => ['font','media'].includes(r.resourceType()) ? r.abort() : r.continue());
+
+    for (let i = 0; i < matches.length; i++) {
+        const match = matches[i];
+        const rawId = match.fixture.raw_id; 
+
+        if (!rawId) continue;
+
+        log(`  ⏳ [${i+1}/${matches.length}] Logo aranıyor: ${match.teams.home.name} vs ${match.teams.away.name}`);
+        try {
+            // Maçın özet sayfasına git
+            await detailPage.goto(`https://www.flashscore.com.tr/mac/${rawId}/#mac-ozeti`, {waitUntil: 'domcontentloaded', timeout: 15000});
+            
+            // Ekranda takım logolarının (.participant__image) belirmesini bekle
+            await detailPage.waitForSelector('.participant__image', {timeout: 4000}).catch(()=>null);
+
+            const logos = await detailPage.evaluate(() => {
+                const imgs = document.querySelectorAll('.participant__image');
+                return {
+                    home: imgs[0] ? imgs[0].src : null,
+                    away: imgs[1] ? imgs[1].src : null
+                };
+            });
+
+            // Logoları maça kaydet
+            match.teams.home.logo = logos.home;
+            match.teams.away.logo = logos.away;
+
+        } catch (err) {
+            log(`  ⚠️ [${rawId}] Logo çekilemedi: ${err.message}`);
+        }
+        
+        await sleep(500); // Banlanmamak için iki maç arasında yarım saniye nefes al
+    }
+
+    await detailPage.close();
+    return matches;
 }
 
 // ─── FİRESTORE ───────────────────────────────────────────────────────────────
 async function saveToFirestore(db, dateStr, matches) {
+    // Veritabanını kirletmesin diye sadece botun kullandığı raw_id'yi siliyoruz
+    matches.forEach(m => { if(m.fixture) delete m.fixture.raw_id; });
+
     await db.collection('archive_matches').doc(dateStr).set({
         fixtures:      matches,
         last_updated:  new Date().toISOString(),
         total_matches: matches.length,
     }, { merge: true });
 
-    log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}`);
+    log(`  ✅ ${matches.length} maç logolarıyla beraber → archive_matches/${dateStr} klasörüne yazıldı!`);
     const leagues = [...new Set(matches.map(m=>`${m.league.country}: ${m.league.name}`))];
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0,6).join(' | ')}${leagues.length>6?` +${leagues.length-6}`:''}`);
 }
 
 // ─── TEK GÜN ─────────────────────────────────────────────────────────────────
-async function processDate(page, db, targetDate) {
+async function processDate(browser, page, db, targetDate) { // Browser eklendi
     const dateStr = formatDate(targetDate);
     log(`\n📆 İşleniyor: ${dateStr}`);
     await navigateToDate(page, targetDate);
     log('⚽ Maçlar toplanıyor...');
-    const matches = await collectMatches(page, targetDate);
+    
+    let matches = await collectMatches(page, targetDate); // let olarak değiştirildi
+    
     log(`🏆 ${matches.length} bitmiş maç.`);
     if (matches.length > 0) {
+        
+        // 🔥 SENİN KODUNA YAPTIĞIM TEK EKLEME 3: Kaydetmeden önce logoları bul 🔥
+        matches = await enrichLogos(browser, matches);
+        
         await saveToFirestore(db, dateStr, matches);
     } else {
         const c = await page.evaluate(()=>document.querySelectorAll('.event__match').length);
@@ -310,13 +354,7 @@ async function processDate(page, db, targetDate) {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
     await page.emulateTimezone('Europe/Istanbul');
     await page.setRequestInterception(true);
-    // Logo CDN'ine izin ver (static.flashscore.com), diğer görselleri engelle
-    page.on('request', r => {
-        if (r.resourceType() === 'image')
-            return r.url().includes('static.flashscore.com') ? r.continue() : r.abort();
-        if (['font', 'media'].includes(r.resourceType())) return r.abort();
-        r.continue();
-    });
+    page.on('request', r => ['image','font','media'].includes(r.resourceType()) ? r.abort() : r.continue());
 
     log("🔍 Flashscore'a bağlanılıyor...");
     try { await page.goto('https://www.flashscore.com.tr/',{waitUntil:'domcontentloaded',timeout:60000}); }
@@ -338,10 +376,10 @@ async function processDate(page, db, targetDate) {
         if (MODE==='daily') {
             const y = getYesterday();
             log(`📅 TR dün: ${formatDate(y)}`);
-            await processDate(page, db, y);
+            await processDate(browser, page, db, y);
         } else if (MODE==='single') {
             if (!SINGLE) throw new Error('--date gerekli!');
-            await processDate(page, db, parseTargetDate(SINGLE));
+            await processDate(browser, page, db, parseTargetDate(SINGLE));
         } else if (MODE==='backfill') {
             if (!FROM_DATE||!TO_DATE) throw new Error('--from ve --to gerekli!');
             const start = parseTargetDate(FROM_DATE);
@@ -351,7 +389,7 @@ async function processDate(page, db, targetDate) {
             for (let i=0; i<total; i++) {
                 const d = new Date(start);
                 d.setUTCDate(start.getUTCDate()+i);
-                await processDate(page, db, d);
+                await processDate(browser, page, db, d);
                 if (i<total-1) await sleep(3000+Math.random()*2000);
             }
         }
