@@ -49,7 +49,15 @@ function getTRToday() {
     return new Date(s.split(',')[0] + 'T00:00:00Z');
 }
 function getYesterday() { const d = getTRToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
-function parseTargetDate(s) { return new Date(s + 'T00:00:00Z'); }
+function parseTargetDate(s) {
+    if (!s || typeof s !== 'string') throw new Error(`Geçersiz tarih parametresi: ${s}`);
+    const clean = s.trim();
+    // YYYY-MM-DD formatını zorla
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) throw new Error(`Tarih YYYY-MM-DD formatında olmalı, alınan: "${clean}"`);
+    const d = new Date(clean + 'T00:00:00Z');
+    if (isNaN(d.getTime())) throw new Error(`Geçersiz tarih: "${clean}"`);
+    return d;
+}
 
 // ─── TAKVİM ──────────────────────────────────────────────────────────────────
 async function clickArrow(page, dir) {
