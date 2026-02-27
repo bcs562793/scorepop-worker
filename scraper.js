@@ -304,14 +304,108 @@ async function saveToFirestore(db, dateStr, matches) {
     log(`  ⚽ Skoru olan: ${withScore}/${matches.length}`);
 }
 
+// ─── MAÇ DETAYLARINI (EVENTS) MACKOLİK API'DEN ÇEK ───────────────────────────
+function fetchMatchDetails(matchId) {
+    return new Promise((resolve) => {
+        const url = `https://arsiv.mackolik.com/Match/MatchData.aspx?t=dtl&id=${matchId}&s=0`;
+        const options = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Accept': 'application/json',
+                'Referer': `https://arsiv.mackolik.com/Mac/${matchId}/`
+            }
+        };
+        https.get(url, options, res => {
+            let raw = '';
+            res.on('data', chunk => raw += chunk);
+            res.on('end', () => {
+                try { resolve(JSON.parse(raw)); }
+                catch(e) { resolve(null); }
+            });
+        }).on('error', () => resolve(null));
+    });
+}
+
+async function enrichMatchEvents(matches) {
+    log(`\n🔍 Maç detayları (Events) çekiliyor... Toplam: ${matches.length} maç`);
+    
+    for (let i = 0; i < matches.length; i++) {
+        const match = matches[i];
+        const matchId = match.fixture.id;
+
+        // Sadece skoru olan (oynanmış veya oynanan) maçların detayını çekelim
+        if (match.fixture.status.short === 'NS' || match.fixture.status.short === 'PST') {
+            continue;
+        }
+
+        const details = await fetchMatchDetails(matchId);
+        
+        if (details && details.e && Array.isArray(details.e)) {
+            match.events = details.e.map(ev => {
+                const teamCode   = ev[0]; // 1: Ev Sahibi, 2: Deplasman
+                const minute     = ev[1];
+                const playerName = ev[3];
+                const typeCode   = ev[4];
+                const extra      = ev[5] || {};
+
+                const teamSide = teamCode === 1 ? 'home' : 'away';
+                const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
+                const teamId   = teamCode === 1 ? match.teams.home.id : match.teams.away.id;
+
+                let typeStr    = 'Other';
+                let detailStr  = '';
+                let assistName = null;
+
+                // Olay Türünü Belirleme
+                if (typeCode === 1) {
+                    typeStr = 'Goal';
+                    detailStr = 'Normal Goal';
+                    if (extra.astName) assistName = `(${extra.astName})`;
+                } else if (typeCode === 2) {
+                    typeStr = 'Yellow Card';
+                } else if (typeCode === 3 || typeCode === 6) {
+                    typeStr = 'Red Card';
+                } else if (typeCode === 4) {
+                    typeStr = 'subst';
+                    detailStr = 'Substitution';
+                    // Değişiklikte giren oyuncuyu assistName alanına koyuyoruz ki Flutter'da rahatça göster!
+                    if (extra.sub) assistName = extra.sub; 
+                }
+
+                return {
+                    minute: minute,
+                    minuteExtra: null,
+                    type: typeStr,
+                    detail: detailStr,
+                    playerName: playerName,
+                    assistName: assistName,
+                    teamSide: teamSide,
+                    teamId: teamId,
+                    teamName: teamName
+                };
+            });
+        }
+        
+        // API'yi boğmamak ve ban yememek için çok kısa bir bekleme süresi
+        await sleep(150); 
+    }
+    
+    log(`  ✅ Events başarıyla maçlara eklendi.`);
+    return matches;
+}
+
+// ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
 async function processDate(db, targetDate) {
     const dateStr = formatDate(targetDate);
     log(`\n📆 İşleniyor: ${dateStr}`);
 
-    const matches = await collectMatches(targetDate);
+    let matches = await collectMatches(targetDate);
 
     if (matches.length > 0) {
+        // 🔥 İŞTE BURADA EVENTS BİLGİLERİNİ MAÇLARA ENTEGRE EDİYORUZ 🔥
+        matches = await enrichMatchEvents(matches);
+        
         await saveToFirestore(db, dateStr, matches);
     } else {
         log(`  ❌ Kayıt yok: ${dateStr}`);
