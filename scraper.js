@@ -1,29 +1,36 @@
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { initializeApp, cert } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
-const fs = require('fs');
+/**
+ * ScorePop — Mackolik → Firebase Scraper
+ * Flashscore bot ile aynı Firebase yapısını kullanır.
+ *
+ * Kullanım:
+ *   node mackolik_firebase.js --mode=daily
+ *   node mackolik_firebase.js --mode=single --date=2026-02-24
+ *   node mackolik_firebase.js --mode=backfill --from=2026-02-01 --to=2026-02-28
+ */
 
-puppeteer.use(StealthPlugin());
+const https = require('https');
+const fs    = require('fs');
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore }        = require('firebase-admin/firestore');
 
 // ─── LOG ─────────────────────────────────────────────────────────────────────
 const logFile = fs.createWriteStream('scraper.log', { flags: 'w' });
 function log(...a)    { const m = a.join(' '); console.log(m);   logFile.write(m + '\n'); }
 function logErr(...a) { const m = a.join(' '); console.error(m); logFile.write('[ERR] ' + m + '\n'); }
 
-process.on('uncaughtException',  e => { logErr('💥 UNCAUGHT:', e.stack||e.message); logFile.end(()=>process.exit(1)); });
-process.on('unhandledRejection', e => { logErr('💥 REJECTION:', e?.stack||e);        logFile.end(()=>process.exit(1)); });
+process.on('uncaughtException',  e => { logErr('💥 UNCAUGHT:',   e.stack || e.message); logFile.end(() => process.exit(1)); });
+process.on('unhandledRejection', e => { logErr('💥 REJECTION:', e?.stack || e);          logFile.end(() => process.exit(1)); });
 
 // ─── ARGS ────────────────────────────────────────────────────────────────────
 const args = Object.fromEntries(
-    process.argv.slice(2).filter(a=>a.startsWith('--')).map(a=>a.slice(2).split('='))
+    process.argv.slice(2).filter(a => a.startsWith('--')).map(a => a.slice(2).split('='))
 );
 const MODE      = args.mode || 'daily';
 const SINGLE    = args.date || null;
 const FROM_DATE = args.from || null;
 const TO_DATE   = args.to   || null;
 
-log('🤖 ScorePop Botu Başlatılıyor...');
+log('🤖 ScorePop Mackolik Botu Başlatılıyor...');
 log(`📋 Mod: ${MODE.toUpperCase()}${SINGLE ? ` | Tarih: ${SINGLE}` : ''}`);
 log(`🔧 Node: ${process.version}`);
 
@@ -41,273 +48,242 @@ function initFirebase() {
 }
 
 // ─── YARDIMCILAR ─────────────────────────────────────────────────────────────
-const formatDate = d => d.toISOString().split('T')[0];
-const sleep      = ms => new Promise(r => setTimeout(r, ms));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function getTRToday() {
     const s = new Date().toLocaleString('en-CA', { timeZone: 'Europe/Istanbul' });
     return new Date(s.split(',')[0] + 'T00:00:00Z');
 }
-function getYesterday() { const d = getTRToday(); d.setUTCDate(d.getUTCDate()-1); return d; }
+function getYesterday() { const d = getTRToday(); d.setUTCDate(d.getUTCDate() - 1); return d; }
+
 function parseTargetDate(s) {
-    if (!s || typeof s !== 'string') throw new Error(`Geçersiz tarih parametresi: ${s}`);
+    if (!s || typeof s !== 'string') throw new Error(`Geçersiz tarih: ${s}`);
     const clean = s.trim();
-    // YYYY-MM-DD formatını zorla
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) throw new Error(`Tarih YYYY-MM-DD formatında olmalı, alınan: "${clean}"`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) throw new Error(`Tarih YYYY-MM-DD formatında olmalı: "${clean}"`);
     const d = new Date(clean + 'T00:00:00Z');
     if (isNaN(d.getTime())) throw new Error(`Geçersiz tarih: "${clean}"`);
     return d;
 }
 
-// ─── TAKVİM ──────────────────────────────────────────────────────────────────
-async function clickArrow(page, dir) {
-    const L = ['.calendar__direction--yesterday','.calendar__navigation--yesterday',
-               '[class*="calendar"][class*="yesterday"]','[class*="calLeft"]'];
-    const R = ['.calendar__direction--tomorrow','.calendar__navigation--tomorrow',
-               '[class*="calendar"][class*="tomorrow"]','[class*="calRight"]'];
-    for (const s of (dir==='left'?L:R)) {
-        try { await page.waitForSelector(s,{visible:true,timeout:2000}); await page.click(s); return true; } catch(_){}
-    }
-    return page.evaluate(dir => {
-        const kw = dir==='left' ? ['yesterday','prev','left'] : ['tomorrow','next','right'];
-        const el = [...document.querySelectorAll('[class*="calendar"] button,[class*="calendar"] span,[class*="calendar"] a')]
-            .find(e => { const c=(e.className?.toString()||'').toLowerCase(); return kw.some(k=>c.includes(k)); });
-        if (el) { el.click(); return true; }
-        const svgs = [...document.querySelectorAll('[class*="calendar"] svg')];
-        const idx  = dir==='left' ? 0 : svgs.length-1;
-        if (svgs[idx]) { const p=svgs[idx].closest('button,a,span,div'); if(p){p.click();return true;} }
-        return false;
-    }, dir);
-}
+/** JS Date → 'YYYY-MM-DD' */
+const formatDate = d => d.toISOString().split('T')[0];
 
-async function getPageDate(page) {
-    return page.evaluate(() => {
-        for (const s of ['.calendar__static','[class*="calendar__static"]','[class*="calDate"]','[class*="calendar"] [class*="date"]']) {
-            const el = document.querySelector(s);
-            if (el?.innerText?.trim().length > 3) return el.innerText.trim();
-        }
-        const m = (window.location.hash||'').match(/(\d{4}-\d{2}-\d{2})/);
-        return m ? m[1] : null;
+/** JS Date → mackolik API formatı 'DD/MM/YYYY' */
+const toMacDate = d => {
+    const [y, m, day] = formatDate(d).split('-');
+    return `${day}/${m}/${y}`;
+};
+
+// ─── MACKOLİK API ─────────────────────────────────────────────────────────────
+function fetchMackolik(dateStr) {
+    return new Promise((resolve, reject) => {
+        // dateStr: 'DD/MM/YYYY' → encodeURIComponent gerekli
+        const url = `https://vd.mackolik.com/livedata?date=${encodeURIComponent(dateStr)}`;
+        const options = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept':     'application/json',
+                'Referer':    'https://arsiv.mackolik.com/',
+            }
+        };
+        https.get(url, options, res => {
+            let raw = '';
+            res.on('data', chunk => raw += chunk);
+            res.on('end', () => {
+                try { resolve(JSON.parse(raw)); }
+                catch(e) { reject(new Error(`JSON parse hatası: ${e.message}`)); }
+            });
+        }).on('error', reject);
     });
 }
 
-async function navigateToDate(page, targetDate) {
-    const targetStr = formatDate(targetDate);
-    log(`  📅 Hedef: ${targetStr}`);
+// ─── SPOR TİPİ ────────────────────────────────────────────────────────────────
+// m[36][11]: 1=futbol, 2=basketbol
+const SPORT_TYPE = { 1: 'Football', 2: 'Basketball', 3: 'Other' };
 
-    // 1. Önce ana sayfayı yükle
-    const currentHash = await page.evaluate(() => window.location.hash);
-    if (!currentHash) {
-        await page.goto('https://www.flashscore.com.tr/', {waitUntil:'domcontentloaded', timeout:30000});
-        await sleep(2000);
-    }
-
-    // 2. Takvim butonuna tıkla
-    const opened = await page.evaluate(() => {
-        const btn = document.querySelector('[data-testid="wcl-dayPickerButton"]');
-        if (btn) { btn.click(); return true; }
-        return false;
-    });
-
-    if (!opened) {
-        log(`  ⚠️ Takvim butonu bulunamadı, hash URL deneniyor...`);
-        await page.goto(`https://www.flashscore.com.tr/#${targetStr}`, {waitUntil:'domcontentloaded', timeout:30000});
-        await sleep(3000);
-        const final = await getPageDate(page);
-        log(`  ✅ Navigasyon bitti. Sayfada: ${final||'?'}`);
-        return;
-    }
-
-    await sleep(800); // Takvim animasyonu bekle
-
-    // 3. Hedef tarihi parse et
-    const [year, month, day] = targetStr.split('-').map(Number);
-
-    // 4. Takvimde doğru ay/yıla git, sonra günü seç
-    const clicked = await page.evaluate((y, m, d) => {
-        // Takvim container'ı bul
-        const calendar = document.querySelector('[role="dialog"], [class*="calendar"], [class*="datePicker"], [class*="dayPicker"]');
-        if (!calendar) return false;
-
-        // Sayfadaki tarihi bul ve hedef aya git (prev/next butonları)
-        // Basit yaklaşım: tüm gün butonlarını tara, doğru tarihi bul
-        const allDays = [...document.querySelectorAll('[role="gridcell"] button, [class*="day"] button, [data-day]')];
-        for (const dayBtn of allDays) {
-            const dateAttr = dayBtn.getAttribute('data-day') || dayBtn.getAttribute('data-date') || '';
-            const label = dayBtn.getAttribute('aria-label') || dayBtn.textContent.trim();
-            if (dateAttr.includes(`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`)) {
-                dayBtn.click();
-                return true;
-            }
-            // Sadece gün numarası varsa — ay değişikliği gerekmeyebilir
-            if (parseInt(label) === d && dayBtn.closest('[class*="current"], [class*="active"]')) {
-                dayBtn.click();
-                return true;
-            }
-        }
-        return false;
-    }, year, month, day);
-
-    if (!clicked) {
-        // Takvim açıldı ama gün bulunamadı — ay değiştir ve tekrar dene
-        log(`  ⚠️ Takvimde gün bulunamadı, ok ile gidiliyor...`);
-        // Escape ile kapat
-        await page.keyboard.press('Escape');
-        await sleep(300);
-        // Fallback: eski ok yöntemi ama daha az beklemeyle
-        const rawPage = await getPageDate(page);
-        let current = getTRToday();
-        if (rawPage) {
-            const im = rawPage.match(/(\d{4}-\d{2}-\d{2})/);
-            if (im) current = new Date(im[1]+'T00:00:00Z');
-        }
-        const diff = Math.round((current - targetDate) / 86400000);
-        const dir = diff > 0 ? 'left' : 'right';
-        const steps = Math.abs(diff);
-        for (let i = 0; i < steps; i++) {
-            await clickArrow(page, dir);
-            await sleep(600);
-        }
-        await sleep(2000);
-    } else {
-        await sleep(2500); // Sayfa yüklensin
-    }
-
-    const final = await getPageDate(page);
-    log(`  ✅ Navigasyon bitti. Sayfada: ${final||'?'}`);
+// Durum kodu → flashscore uyumlu status objesi
+function parseStatus(statusCode, statusText) {
+    const map = {
+        0:  { long: 'Not Started',     short: 'NS',  elapsed: null },
+        4:  { long: 'Match Finished',  short: 'FT',  elapsed: 90   },
+        8:  { long: 'Match Finished',  short: 'PEN', elapsed: 120  },
+        9:  { long: 'Postponed',       short: 'PST', elapsed: null },
+        20: { long: 'Extra Time',      short: 'ET',  elapsed: 105  },
+        13: { long: 'Match Finished',  short: 'FT',  elapsed: null },  // Basketbol
+    };
+    return { ...(map[statusCode] || { long: statusText || 'Unknown', short: 'UN', elapsed: null }), extra: null };
 }
 
-// ─── MAÇLARI TOPLA ───────────────────────────────────────────────────────────
-async function collectMatches(page, targetDate) {
-    const dateStr    = formatDate(targetDate);
-    const timestamp  = Math.floor(targetDate.getTime() / 1000);
-    const seasonYear = targetDate.getFullYear();
+// ─── TEK MAÇ PARSE ────────────────────────────────────────────────────────────
+/*
+  Mackolik m dizisi:
+  [0]  matchId
+  [1]  homeId
+  [2]  homeName
+  [3]  awayId
+  [4]  awayName
+  [5]  statusCode
+  [6]  statusText (MS / Ert. / vb.)
+  [7]  scoreStr ("2-1")
+  [10] redCard home (int)
+  [11] redCard away (int)
+  [12] home shots on target (int)
+  [13] away shots on target (int)
+  [16] time string ("20:45")
+  [17] isNeutral? (1=nötr)
+  [18] odd1
+  [19] oddX
+  [20] odd2
+  [29] IY home string
+  [30] IY away string
+  [31] final home goals (string)
+  [32] final away goals (string)
+  [35] date string ("24/02/2026")
+  [36] [countryId, countryName, leagueId, leagueName, tournId, season, "", aeleme, ?, leagueCode, ?, sportType]
+  [37] hasOdds
+*/
+function parseMatch(m, targetDate) {
+    if (!Array.isArray(m) || m.length < 37) return null;
 
-    // Yavaş scroll → lazy-load tetiklensin, logolar src'ye yazılsın
-    await page.evaluate(async () => {
-        await new Promise(r => {
-            let p = 0;
-            const t = setInterval(() => {
-                window.scrollBy(0, 400);
-                p += 400;
-                if (p >= document.body.scrollHeight) { clearInterval(t); r(); }
-            }, 300);
-        });
-        window.scrollTo(0, 0);
-    });
-    await sleep(3000); // Lazy yüklenen logoların DOM'a yazılmasını bekle
+    const li = Array.isArray(m[36]) ? m[36] : [];
 
-    return page.evaluate((dateStr, timestamp, seasonYear) => {
-        const results = [];
-        let league = { id:0, name:'Unknown League', country:'Unknown' };
+    // Skor & goller
+    const scoreStr = m[7] || '';
+    const toInt = v => { const n = parseInt(v); return isNaN(n) ? null : n; };
+    const homeGoals = toInt(m[31]);
+    const awayGoals = toInt(m[32]);
+    const htHome    = toInt(m[29]);
+    const htAway    = toInt(m[30]);
 
-        // 🔥 YENİ SİSTEM: Hem headerLeague hem event__header class'larını tarar 🔥
-        const rows = document.querySelectorAll('.headerLeague, .event__header, .event__match, [id^="g_1_"]');
+    // İsabetli şut (m[12], m[13])
+    const homeShotsOT = typeof m[12] === 'number' ? m[12] : null;
+    const awayShotsOT = typeof m[13] === 'number' ? m[13] : null;
 
-        rows.forEach(el => {
-            const cls = (el.className?.toString() || '').toLowerCase();
-            const id = el.id || '';
+    // Kırmızı kart
+    const rcHome = typeof m[10] === 'number' ? m[10] : 0;
+    const rcAway = typeof m[11] === 'number' ? m[11] : 0;
 
-            const isMatch = cls.includes('match') || id.startsWith('g_1_');
-            const isHeader = !isMatch && (cls.includes('headerleague') || cls.includes('event__header'));
+    // Durum
+    const statusCode = typeof m[5] === 'number' ? m[5] : 0;
+    const statusText = typeof m[6] === 'string'  ? m[6] : '';
+    const status     = parseStatus(statusCode, statusText);
 
-            // ── LİG BAŞLIĞI İŞLEME ──
-            if (isHeader) {
-                // SENİN GÖNDERDİĞİN HTML'DEKİ GERÇEK CLASS'LAR (Flashscore'un yeni yapısı)
-                const nameEl = el.querySelector('.headerLeague__title-text, .event__title--name');
-                const countryEl = el.querySelector('.headerLeague__category-text, .event__title--type');
+    // Lig bilgisi
+    const countryId   = li[0]  ?? null;
+    const countryName = li[1]  ?? 'Unknown';
+    const leagueId    = li[2]  ?? null;
+    const leagueName  = li[3]  ?? 'Unknown';
+    const season      = li[5]  ?? String(targetDate.getFullYear());
+    const leagueCode  = li[9]  ?? '';
+    const sportTypeId = li[11] ?? 1;
 
-                if (nameEl) {
-                    league.name = nameEl.textContent.trim();
-                    league.country = countryEl ? countryEl.textContent.replace(/:/g, '').trim() : "Unknown";
-                } else {
-                    // Güvenlik Duvarı (Ne olur ne olmaz)
-                    const clone = el.cloneNode(true);
-                    clone.querySelectorAll('a, button, .event__tabs, svg, .headerLeague__actions').forEach(e => e.remove());
-                    const lines = clone.innerText.split('\n').map(l=>l.trim()).filter(Boolean);
-                    
-                    if (lines.length >= 2) {
-                        league.country = lines[0].replace(/:/g, '').trim();
-                        league.name = lines[1];
-                    } else if (lines.length === 1) {
-                        league.name = lines[0];
-                        league.country = "Unknown";
-                    }
-                }
+    // Oranlar (null ise "0.00" yerine null koy)
+    const parseOdd = v => (v && v !== '0.00' && v !== '0.0') ? parseFloat(v) : null;
 
-                // Lig adından ID üret
-                if (league.name === 'Unknown League' || league.name === '') return;
-                
-                let h=0;
-                for(let i=0;i<league.name.length;i++) h=league.name.charCodeAt(i)+((h<<5)-h);
-                league.id = Math.abs(h);
-                return;
-            }
+    // Tarih+saat
+    const dateStr  = formatDate(targetDate);
+    const timeStr  = typeof m[16] === 'string' ? m[16] : '00:00';
+    const isoDate  = `${dateStr}T${timeStr}:00+03:00`;
+    const timestamp = Math.floor(targetDate.getTime() / 1000);
 
-            // ── MAÇ SATIRI İŞLEME ──
-            if (isMatch) {
-                const rawText = el.innerText || el.textContent;
-                if (!rawText) return;
+    // Kazanan
+    const homeWin = homeGoals !== null && awayGoals !== null
+        ? (homeGoals > awayGoals ? true : homeGoals === awayGoals ? null : false)
+        : null;
+    const awayWin = homeGoals !== null && awayGoals !== null
+        ? (awayGoals > homeGoals ? true : homeGoals === awayGoals ? null : false)
+        : null;
 
-                const lines = rawText.split('\n').map(l=>l.trim()).filter(Boolean);
-                if (lines.length < 5) return;
+    // Penalty / aeleme bilgisi
+    const isPenalty = statusCode === 8;
+    const isElim    = (li[7] === 1) ? true : false;
 
-                const status = lines[0];
-                let home=lines[1], away=lines[2], hs=lines[3], as_=lines[4];
+    return {
+        // ── flashscore bot ile AYNI yapı ──
+        fixture: {
+            id:        m[0],
+            raw_id:    null,            // Mackolik'te detay URL yok
+            referee:   null,
+            timezone:  'Europe/Istanbul',
+            date:      isoDate,
+            timestamp: timestamp,
+            periods:   { first: null, second: null },
+            venue:     { id: null, name: null, city: null },
+            status:    status,
+        },
+        league: {
+            id:         leagueId,
+            name:       leagueName,
+            country:    countryName,
+            logo:       null,
+            flag:       null,
+            season:     season,
+            round:      'Regular Season',
+            standings:  false,
+            code:       leagueCode,
+            sport:      SPORT_TYPE[sportTypeId] || 'Football',
+            is_elim:    isElim,
+        },
+        teams: {
+            home: {
+                id:     m[1],
+                name:   m[2],
+                logo:   null,
+                winner: homeWin,
+                red_cards: rcHome,
+            },
+            away: {
+                id:     m[3],
+                name:   m[4],
+                logo:   null,
+                winner: awayWin,
+                red_cards: rcAway,
+            },
+        },
+        goals: {
+            home: homeGoals,
+            away: awayGoals,
+        },
+        score: {
+            halftime:  { home: htHome,    away: htAway    },
+            fulltime:  { home: homeGoals, away: awayGoals },
+            extratime: { home: null,      away: null      },
+            penalty:   isPenalty ? { home: null, away: null } : { home: null, away: null },
+        },
+        // Mackolik bu endpoint'te sağlamıyor — boş bırak, ileride zenginleştirilebilir
+        events:  [],
+        stats: homeShotsOT !== null ? [
+            { type: 'Shots on Target', homeVal: String(homeShotsOT), awayVal: String(awayShotsOT ?? 0) },
+        ] : [],
+        lineups: { home: { formation: '', players: [], subs: [] }, away: { formation: '', players: [], subs: [] } },
 
-                // Kırmızı kart kayması
-                if (!isNaN(parseInt(away))) { away=lines[3]; hs=lines[4]; as_=lines[5]; }
-
-                if (!hs || !as_ || hs==='-' || as_==='-' || isNaN(parseInt(hs)) || isNaN(parseInt(as_)) || !isNaN(parseInt(status.charAt(0)))) return;
-
-                const h   = parseInt(hs);
-                const a   = parseInt(as_);
-                const matchId = id ? (parseInt(id.replace('g_1_',''),36) || Math.floor(Math.random()*1e6)) : Math.floor(Math.random()*1e6);
-
-                // ── MAÇ URL & RAW_ID ──
-                const linkEl   = el.querySelector('a.eventRowLink');
-                const href     = linkEl ? linkEl.getAttribute('href') : null;
-                // href tam URL veya göreceli olabilir, her iki durumu da handle et
-                // Sonuç: futbol/atalanta-8C9JjMXu/dortmund-nP1i5US1/
-                let rawId = null;
-                if (href) {
-                    const m = href.match(/\/mac\/(.+?)(?:\?|#|$)/);
-                    rawId = m ? m[1] : null;
-                }
-
-                results.push({
-                    fixture: {
-                        id: matchId, raw_id: rawId, referee:null, timezone:'Europe/Istanbul',
-                        date:`${dateStr}T20:00:00+03:00`, timestamp,
-                        periods:{first:null,second:null},
-                        venue:{id:null,name:null,city:null},
-                        status:{long:'Match Finished',short:'FT',elapsed:90,extra:null}
-                    },
-                    league: {
-                        id:league.id, name:league.name, country:league.country,
-                        logo:null, flag:null, season:seasonYear,
-                        round:'Regular Season', standings:false
-                    },
-                    teams: {
-                        home: { id:0, name:home, logo:null, winner: h>a ? true : (h===a ? null : false) },
-                        away: { id:0, name:away, logo:null, winner: a>h ? true : (h===a ? null : false) }
-                    },
-                    goals: { home:h, away:a },
-                    score: {
-                        halftime:  { home:null, away:null },
-                        fulltime:  { home:h,    away:a    },
-                        extratime: { home:null, away:null  },
-                        penalty:   { home:null, away:null  }
-                    }
-                });
-            }
-        });
-
-        return results;
-    }, dateStr, timestamp, seasonYear);
+        // Ekstra — flashscore'da olmayan ama ScorePop için faydalı
+        odds: {
+            home: parseOdd(m[18]),
+            draw: parseOdd(m[19]),
+            away: parseOdd(m[20]),
+        },
+    };
 }
 
-// ─── FİRESTORE ───────────────────────────────────────────────────────────────
+// ─── MAÇLARI ÇEK & PARSE ET ───────────────────────────────────────────────────
+async function collectMatches(targetDate) {
+    const macDate = toMacDate(targetDate);
+    log(`  📡 Mackolik API: ${macDate}`);
+
+    const data = await fetchMackolik(macDate);
+    const raw  = data.m || [];
+    log(`  📦 Ham kayıt: ${raw.length}`);
+
+    const matches = raw
+        .map(m => parseMatch(m, targetDate))
+        .filter(Boolean);
+
+    log(`  ✅ Parse edilen: ${matches.length} maç`);
+    return matches;
+}
+
+// ─── FİRESTORE KAYDET ──────────────────────────────────────────────────────────
 async function saveToFirestore(db, dateStr, matches) {
     await db.collection('archive_matches').doc(dateStr).set({
         fixtures:      matches,
@@ -316,261 +292,70 @@ async function saveToFirestore(db, dateStr, matches) {
     }, { merge: true });
 
     log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}`);
-    const leagues = [...new Set(matches.map(m=>`${m.league.country}: ${m.league.name}`))];
-    log(`  📋 ${leagues.length} lig: ${leagues.slice(0,6).join(' | ')}${leagues.length>6?` +${leagues.length-6}`:''}`);
+
+    const leagues = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
+    log(`  📋 ${leagues.length} lig: ${leagues.slice(0, 6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length - 6}` : ''}`);
+
+    const sports = [...new Set(matches.map(m => m.league.sport))];
+    log(`  🏅 Sporlar: ${sports.join(', ')}`);
+
+    const withScore = matches.filter(m => m.goals.home !== null).length;
+    log(`  ⚽ Skoru olan: ${withScore}/${matches.length}`);
 }
 
-// ─── LOGO + EVENTS ZENGİNLEŞTİRME ──────────────────────────────────────────
-async function enrichMatchData(browser, matches) {
-    log(`\n🔍 DETAYLAR ÇEKİLİYOR: ${matches.length} maç (logo + events)...`);
-    const detailPage = await browser.newPage();
-    await detailPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
-    await detailPage.setRequestInterception(true);
-    detailPage.on('request', r => ['font','media'].includes(r.resourceType()) ? r.abort() : r.continue());
-
-    for (let i = 0; i < matches.length; i++) {
-        const match = matches[i];
-        const rawId = match.fixture.raw_id;
-        if (!rawId) continue;
-        log(`  ⏳ [${i+1}/${matches.length}] ${match.teams.home.name} vs ${match.teams.away.name}`);
-        try {
-            // ── 1. ÖZET (events + logolar) ──
-            await detailPage.goto(`https://www.flashscore.com.tr/mac/${rawId}#mac-ozeti`, {waitUntil:'domcontentloaded', timeout:15000});
-            await detailPage.waitForSelector('.participant__image', {timeout:5000}).catch(()=>null);
-            await new Promise(r => setTimeout(r, 1500));
-
-            const data = await detailPage.evaluate((homeTeamName, awayTeamName) => {
-                const imgs = document.querySelectorAll('.participant__image');
-                const src = img => (img && img.src && img.src.startsWith('http')) ? img.src : null;
-                const homeLogo = src(imgs[0]);
-                const awayLogo = src(imgs[1]);
-                const events = [];
-                document.querySelectorAll('.smv__incident').forEach(el => {
-                    const cls = (el.className || '').toLowerCase();
-                    const minEl = el.querySelector('.smv__timeBox');
-                    const minuteRaw = minEl ? minEl.textContent.trim().replace("'","") : null;
-                    const minuteParts = minuteRaw ? minuteRaw.split('+') : [];
-                    const minute = minuteParts[0] ? parseInt(minuteParts[0]) : null;
-                    const minuteExtra = minuteParts[1] ? parseInt(minuteParts[1]) : null;
-                    const playerEl = el.querySelector('.smv__playerName, .smv__incidentPlayerName');
-                    const playerName = playerEl ? playerEl.textContent.trim() : null;
-                    const assistEl = el.querySelector('.smv__assist, .smv__incidentSubPlayerName');
-                    const assistName = assistEl ? assistEl.textContent.trim().replace('↳','').trim() : null;
-                    const iconSvg = el.querySelector('[data-testid]');
-                    const testId = iconSvg ? (iconSvg.getAttribute('data-testid') || '') : '';
-                    let type = 'Other'; let detail = '';
-                    if (testId.includes('goal')) {
-                        type = 'Goal'; detail = 'Normal Goal';
-                        if (testId.includes('penalty')) detail = 'Penalty';
-                        if (testId.includes('own'))     detail = 'Own Goal';
-                    } else if (testId.includes('yellowRed') || testId.includes('yellow-red')) {
-                        type = 'Card'; detail = 'Yellow Red Card';
-                    } else if (testId.includes('card-yellow') || testId.includes('yellowCard')) {
-                        type = 'Card'; detail = 'Yellow Card';
-                    } else if (testId.includes('card-red') || testId.includes('redCard')) {
-                        type = 'Card'; detail = 'Red Card';
-                    } else if (testId.includes('substitution') || testId.includes('subst')) {
-                        type = 'subst'; detail = 'Substitution';
-                    } else if (testId.includes('var')) {
-                        type = 'Var'; detail = 'VAR Decision';
-                    }
-                    if (minute === null && playerName === null) return;
-                    const isAwayEl = el.querySelector('.smv__awayParticipant, [class*="away"]');
-                    const isHomeEl = el.querySelector('.smv__homeParticipant, [class*="home"]');
-                    const parentCls = (el.parentElement?.className || '').toLowerCase();
-                    let teamSide = 'home';
-                    if (isAwayEl && !isHomeEl) teamSide = 'away';
-                    else if (parentCls.includes('away')) teamSide = 'away';
-                    events.push({ minute, minuteExtra, type, detail, playerName, assistName, teamSide });
-                });
-                return { homeLogo, awayLogo, events };
-            }, match.teams.home.name, match.teams.away.name);
-
-            if (data.homeLogo) match.teams.home.logo = data.homeLogo;
-            if (data.awayLogo) match.teams.away.logo = data.awayLogo;
-            match.events = data.events.map(ev => ({
-                ...ev,
-                teamId: ev.teamSide === 'home' ? match.teams.home.id : match.teams.away.id,
-                teamName: ev.teamSide === 'home' ? match.teams.home.name : match.teams.away.name,
-            }));
-            const evtCount = match.events.length;
-            if (evtCount > 0) log(`    ⚡ ${evtCount} event (${data.events.filter(e=>e.type==='Goal').length} gol)`);
-
-            // ── 2. İSTATİSTİKLER ──
-            // İstatistikler aynı sayfada tab olarak — butona tıkla
-            await detailPage.goto(`https://www.flashscore.com.tr/mac/${rawId}#mac-ozeti`, {waitUntil:'domcontentloaded', timeout:15000});
-            await new Promise(r => setTimeout(r, 1000));
-            // İstatistikler tabına tıkla
-            await detailPage.evaluate(() => {
-                const tabs = document.querySelectorAll('[data-testid="wcl-tab"]');
-                for (const tab of tabs) {
-                    if (tab.textContent.trim().includes('statistik') || tab.textContent.trim().includes('İstatistik')) {
-                        tab.click(); break;
-                    }
-                }
-            });
-            await new Promise(r => setTimeout(r, 1500));
-            const statsData = await detailPage.evaluate(() => {
-                const stats = [];
-                // Her satır: data-testid="wcl-statistics"
-                document.querySelectorAll('[data-testid="wcl-statistics"]').forEach(row => {
-                    // Kategori adı
-                    const nameEl = row.querySelector('[data-testid="wcl-statistics-category"]');
-                    if (!nameEl) return;
-                    const name = nameEl.querySelector('[data-testid="wcl-scores-simple-text-01"]')?.textContent?.trim()
-                               || nameEl.textContent.trim();
-                    // Değerler — homeValue ve awayValue class'ına göre
-                    const valueEls = row.querySelectorAll('[data-testid="wcl-statistics-value"]');
-                    if (valueEls.length < 2) return;
-                    // İlk bold span = asıl değer (örn: "56%"), ikinci span = detay (örn: "(474/582)")
-                    const homeVal = valueEls[0].querySelector('[data-testid="wcl-scores-simple-text-01"]')?.textContent?.trim() || '';
-                    const awayVal = valueEls[1].querySelector('[data-testid="wcl-scores-simple-text-01"]')?.textContent?.trim() || '';
-                    if (name && homeVal && awayVal) {
-                        stats.push({ type: name, homeVal, awayVal });
-                    }
-                });
-                // Duplicate'leri temizle (aynı stat birden fazla section'da çıkıyor)
-                const seen = new Set();
-                return stats.filter(s => {
-                    if (seen.has(s.type)) return false;
-                    seen.add(s.type); return true;
-                });
-            });
-            match.stats = statsData;
-            if (statsData.length > 0) log(`    📊 ${statsData.length} stat`);
-
-            // ── 3. KADRO ──
-            await detailPage.goto(`https://www.flashscore.com.tr/mac/${rawId}#kadro`, {waitUntil:'domcontentloaded', timeout:15000});
-            await new Promise(r => setTimeout(r, 1500));
-            const lineupsData = await detailPage.evaluate(() => {
-                const parseTeam = (container) => {
-                    if (!container) return { formation: '', players: [], subs: [] };
-                    const formation = container.querySelector('[class*="formation"]')?.textContent?.trim() || '';
-                    const players = [];
-                    const subs = [];
-                    container.querySelectorAll('[class*="lineupTable__player"], [class*="lineup__player"]').forEach(el => {
-                        const name = el.querySelector('[class*="playerName"], [class*="player__name"]')?.textContent?.trim() || el.textContent.trim();
-                        const number = el.querySelector('[class*="playerNumber"], [class*="player__number"]')?.textContent?.trim() || '';
-                        const isSub = el.closest('[class*="substitute"], [class*="subs"]') !== null;
-                        const player = { name, number: parseInt(number) || null };
-                        if (isSub) subs.push(player);
-                        else players.push(player);
-                    });
-                    return { formation, players, subs };
-                };
-                const containers = document.querySelectorAll('[class*="lineupTable"], [class*="lineup__table"]');
-                const home = parseTeam(containers[0]);
-                const away = parseTeam(containers[1]);
-                return { home, away };
-            });
-            match.lineups = lineupsData;
-            const totalPlayers = (lineupsData.home?.players?.length || 0) + (lineupsData.away?.players?.length || 0);
-            if (totalPlayers > 0) log(`    👕 kadro: ${totalPlayers} oyuncu`);
-
-        } catch(err) {
-            log(`  ⚠️ [${rawId}] Detay çekilemedi: ${err.message}`);
-        }
-        await sleep(500);
-    }
-
-    await detailPage.close();
-    return matches;
-}
-
-// ─── TEK GÜN ─────────────────────────────────────────────────────────────────
-async function processDate(page, db, targetDate, browser) {
+// ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
+async function processDate(db, targetDate) {
     const dateStr = formatDate(targetDate);
     log(`\n📆 İşleniyor: ${dateStr}`);
-    await navigateToDate(page, targetDate);
-    log('⚽ Maçlar toplanıyor...');
-    let matches = await collectMatches(page, targetDate);
-    log(`🏆 ${matches.length} bitmiş maç.`);
+
+    const matches = await collectMatches(targetDate);
+
     if (matches.length > 0) {
-        matches = await enrichMatchData(browser, matches);
-        const withLogo  = matches.filter(m => m.teams.home.logo || m.teams.away.logo).length;
-        const withEvents = matches.filter(m => m.events && m.events.length > 0).length;
-        log(`🖼️  ${withLogo}/${matches.length} logo | ⚡ ${withEvents}/${matches.length} event çekildi.`);
         await saveToFirestore(db, dateStr, matches);
     } else {
-        const c = await page.evaluate(()=>document.querySelectorAll('.event__match').length);
-        log(`  ❌ Bitmiş maç yok. (Sayfada ${c} .event__match var)`);
+        log(`  ❌ Kayıt yok: ${dateStr}`);
     }
 }
 
 // ─── ANA AKIŞ ─────────────────────────────────────────────────────────────────
 (async () => {
-    let db, browser;
-
+    let db;
     try { db = initFirebase(); }
-    catch(e) { logErr('💥 Firebase:', e.message); logFile.end(()=>process.exit(1)); return; }
+    catch (e) { logErr('💥 Firebase:', e.message); logFile.end(() => process.exit(1)); return; }
 
     try {
-        log('🌍 Browser başlatılıyor...');
-        browser = await puppeteer.launch({
-            headless: true,
-            args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
-                   '--disable-gpu','--window-size=1920,1080','--disable-blink-features=AutomationControlled'],
-        });
-        log('   ✓ Browser hazır.');
-    }
-    catch(e) { logErr('💥 Browser:', e.message); logFile.end(()=>process.exit(1)); return; }
-
-    const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
-    await page.emulateTimezone('Europe/Istanbul');
-    await page.setRequestInterception(true);
-    // Logo CDN'ine izin ver (static.flashscore.com), diğer görselleri engelle
-    page.on('request', r => {
-        if (r.resourceType() === 'image')
-            return r.url().includes('static.flashscore.com') ? r.continue() : r.abort();
-        if (['font', 'media'].includes(r.resourceType())) return r.abort();
-        r.continue();
-    });
-
-    log("🔍 Flashscore'a bağlanılıyor...");
-    try { await page.goto('https://www.flashscore.com.tr/',{waitUntil:'domcontentloaded',timeout:60000}); }
-    catch(e) { log('⚠️ Goto timeout:', e.message); }
-
-    const title = await page.title();
-    log(`📌 Sayfa: ${title}`);
-    if (title.toLowerCase().includes('just a moment')) { log('🛡️ Cloudflare, 20s...'); await sleep(20000); }
-
-    try {
-        await page.waitForSelector('#onetrust-accept-btn-handler',{timeout:5000});
-        await page.click('#onetrust-accept-btn-handler');
-        await sleep(1000);
-        log('🍪 Çerez kabul edildi.');
-    } catch(_) {}
-    await sleep(2000);
-
-    try {
-        if (MODE==='daily') {
+        if (MODE === 'daily') {
             const y = getYesterday();
             log(`📅 TR dün: ${formatDate(y)}`);
-            await processDate(page, db, y, browser);
-        } else if (MODE==='single') {
-            if (!SINGLE) throw new Error('--date gerekli!');
-            await processDate(page, db, parseTargetDate(SINGLE), browser);
-        } else if (MODE==='backfill') {
-            if (!FROM_DATE||!TO_DATE) throw new Error('--from ve --to gerekli!');
+            await processDate(db, y);
+
+        } else if (MODE === 'single') {
+            if (!SINGLE) throw new Error('--date gerekli! (YYYY-MM-DD)');
+            await processDate(db, parseTargetDate(SINGLE));
+
+        } else if (MODE === 'backfill') {
+            if (!FROM_DATE || !TO_DATE) throw new Error('--from ve --to gerekli! (YYYY-MM-DD)');
             const start = parseTargetDate(FROM_DATE);
             const end   = parseTargetDate(TO_DATE);
-            const total = Math.round((end-start)/86400000)+1;
+            const total = Math.round((end - start) / 86400000) + 1;
             log(`🗓️  ${FROM_DATE} → ${TO_DATE} (${total} gün)`);
-            for (let i=0; i<total; i++) {
+
+            for (let i = 0; i < total; i++) {
                 const d = new Date(start);
-                d.setUTCDate(start.getUTCDate()+i);
-                await processDate(page, db, d, browser);
-                if (i<total-1) await sleep(3000+Math.random()*2000);
+                d.setUTCDate(start.getUTCDate() + i);
+                await processDate(db, d);
+                if (i < total - 1) await sleep(800 + Math.random() * 400); // API'ya nazik ol
             }
+        } else {
+            throw new Error(`Bilinmeyen mod: ${MODE}. (daily | single | backfill)`);
         }
-    } catch(e) {
-        logErr('🔴 KRİTİK HATA:', e.stack||e.message);
-        await browser.close();
-        logFile.end(()=>process.exit(1)); return;
+
+    } catch (e) {
+        logErr('🔴 KRİTİK HATA:', e.stack || e.message);
+        logFile.end(() => process.exit(1));
+        return;
     }
 
-    await browser.close();
     log('\n🏁 Tamamlandı.');
-    logFile.end(()=>process.exit(0));
+    logFile.end(() => process.exit(0));
 })();
