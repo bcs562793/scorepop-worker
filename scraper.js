@@ -326,71 +326,68 @@ function fetchMatchDetails(matchId) {
     });
 }
 
+// 🔥 ROKET VERSİYONU (FLUTTER UYUMLU ANAHTARLARLA) 🔥
 async function enrichMatchEvents(matches) {
     log(`\n🔍 Maç detayları (Events) çekiliyor... Toplam: ${matches.length} maç`);
     
-    for (let i = 0; i < matches.length; i++) {
-        const match = matches[i];
-        const matchId = match.fixture.id;
+    const CONCURRENCY_LIMIT = 15; 
 
-        // Sadece skoru olan (oynanmış veya oynanan) maçların detayını çekelim
-        if (match.fixture.status.short === 'NS' || match.fixture.status.short === 'PST') {
-            continue;
-        }
-
-        const details = await fetchMatchDetails(matchId);
+    for (let i = 0; i < matches.length; i += CONCURRENCY_LIMIT) {
+        const chunk = matches.slice(i, i + CONCURRENCY_LIMIT);
         
-        if (details && details.e && Array.isArray(details.e)) {
-            match.events = details.e.map(ev => {
-                const teamCode   = ev[0]; // 1: Ev Sahibi, 2: Deplasman
-                const minute     = ev[1];
-                const playerName = ev[3];
-                const typeCode   = ev[4];
-                const extra      = ev[5] || {};
+        await Promise.all(chunk.map(async (match) => {
+            const matchId = match.fixture.id;
 
-                const teamSide = teamCode === 1 ? 'home' : 'away';
-                const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
-                const teamId   = teamCode === 1 ? match.teams.home.id : match.teams.away.id;
+            if (['NS', 'PST', 'CANC'].includes(match.fixture.status.short)) {
+                return;
+            }
 
-                let typeStr    = 'Other';
-                let detailStr  = '';
-                let assistName = null;
+            const details = await fetchMatchDetails(matchId);
+            
+            if (details && details.e && Array.isArray(details.e)) {
+                match.events = details.e.map(ev => {
+                    const teamCode   = ev[0]; 
+                    const minute     = ev[1];
+                    const playerName = ev[3];
+                    const typeCode   = ev[4];
+                    const extra      = ev[5] || {};
 
-                // Olay Türünü Belirleme
-                if (typeCode === 1) {
-                    typeStr = 'Goal';
-                    detailStr = 'Normal Goal';
-                    if (extra.astName) assistName = `(${extra.astName})`;
-                } else if (typeCode === 2) {
-                    typeStr = 'Yellow Card';
-                } else if (typeCode === 3 || typeCode === 6) {
-                    typeStr = 'Red Card';
-                } else if (typeCode === 4) {
-                    typeStr = 'subst';
-                    detailStr = 'Substitution';
-                    // Değişiklikte giren oyuncuyu assistName alanına koyuyoruz ki Flutter'da rahatça göster!
-                    if (extra.sub) assistName = extra.sub; 
-                }
+                    // 🔥 FLUTTER İÇİN ESKİ FLASHSCORE ANAHTARLARINA ÇEVİRİYORUZ 🔥
+                    const team = teamCode === 1 ? 'home' : 'away';
+                    const time = minute + "'"; // 60 -> 60'
 
-                return {
-                    minute: minute,
-                    minuteExtra: null,
-                    type: typeStr,
-                    detail: detailStr,
-                    playerName: playerName,
-                    assistName: assistName,
-                    teamSide: teamSide,
-                    teamId: teamId,
-                    teamName: teamName
-                };
-            });
-        }
+                    let type = 'Unknown';
+                    let detail = '';
+
+                    // Flashscore ile birebir aynı Type ve Detail formatı
+                    if (typeCode === 1) {
+                        type = 'Goal';
+                        if (extra.astName) detail = `(${extra.astName})`;
+                    } else if (typeCode === 2) {
+                        type = 'Yellow Card';
+                    } else if (typeCode === 3 || typeCode === 6) {
+                        type = 'Red Card';
+                    } else if (typeCode === 4) {
+                        type = 'Substitution'; // subst yerine tam kelime
+                        if (extra.sub) detail = `Çıkan: ${extra.sub}`; 
+                    }
+
+                    // Obje yapısı Flashscore ile %100 aynı oldu
+                    return {
+                        time: time,
+                        team: team,
+                        type: type,
+                        player: playerName,
+                        detail: detail
+                    };
+                });
+            }
+        }));
         
-        // API'yi boğmamak ve ban yememek için çok kısa bir bekleme süresi
-        await sleep(150); 
+        await sleep(500); 
     }
     
-    log(`  ✅ Events başarıyla maçlara eklendi.`);
+    log(`  ✅ Events başarıyla saniyeler içinde maçlara eklendi.`);
     return matches;
 }
 
