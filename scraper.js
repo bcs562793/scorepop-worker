@@ -148,8 +148,14 @@ function fetchMatchStandings(matchId) {
             let raw = '';
             res.on('data', chunk => raw += chunk);
             res.on('end', () => {
-                try { resolve(parseStandingsHtml(raw)); }
-                catch(e) {
+                try {
+                    const result = parseStandingsHtml(raw);
+                    // ── Boş gelirse ham HTML'in ilk 200 karakterini logla ──
+                    if (result.length === 0 && raw.trim().length > 0) {
+                        log(`  ⚠️  Standings boş matchId=${matchId} | ham: ${raw.slice(0, 150).replace(/\s+/g, ' ')}`);
+                    }
+                    resolve(result);
+                } catch(e) {
                     logErr(`  ❌ Standings parse hatası matchId=${matchId}: ${e.message}`);
                     resolve([]);
                 }
@@ -582,6 +588,7 @@ async function saveToFirestore(db, dateStr, matches) {
     log(`  ⚽ Skoru olan: ${withScore}/${matches.length}`);
     log(`  🎯 Events: ${withEvents}/${matches.length} | Toplam: ${totalEvents}`);
     log(`  👕 Lineup: ${withLineups}/${matches.length}`);
+    log(`  🏆 Standings: ${withStandings}/${matches.length}`);
 }
 
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
