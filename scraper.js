@@ -192,6 +192,7 @@ function fetchMatchStandings(matchId) {
 }
 
 // ─── PUAN TABLOSUNU JSON ŞABLONUNA UYDURMA ────────────────────────────────────
+// ─── PUAN TABLOSUNU JSON ŞABLONUNA UYDURMA ────────────────────────────────────
 function parseStandingsHtml(html) {
     const standings = [];
 
@@ -202,7 +203,7 @@ function parseStandingsHtml(html) {
     while ((row = rowRegex.exec(html)) !== null) {
         const block = row[0];
 
-        // teamId — iki olası konum
+        // teamId
         const teamIdMatch = block.match(/data-teamid="(\d+)"/);
         if (!teamIdMatch) continue;
         const teamId = parseInt(teamIdMatch[1], 10);
@@ -212,21 +213,20 @@ function parseStandingsHtml(html) {
         if (!rankMatch) continue;
         const rank = parseInt(rankMatch[1], 10);
 
-        // Takım adı — href içindeki text
+        // Takım adı
         const nameMatch = block.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
         const name = nameMatch ? nameMatch[1].trim() : '';
 
-        // Sayısal sütunlar: O G B M A Y AV P  
-        // DİKKAT: Averaj eksi olabileceği için "-?" eklendi!
+        // 🔥 Senin çalışan efsane Regex'in! (O, G, B, M, P değerlerini alır)
         const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(\d+)(?:<\/b>)?<\/td>/g)]
-        .map(m => parseInt(m[1], 10));
+            .map(m => parseInt(m[1], 10));
 
-        // Eğer satırda 8 veri yoksa (O, G, B, M, A, Y, AV, P) burası puan tablosu değildir
-        if (nums.length < 8) continue;
+        // Mackolik align="right" formatında sadece 5 sütun veriyor
+        if (nums.length < 5) continue;
 
-        const [played, win, draw, lose, gf, ga, gd, points] = nums;
+        const [played, win, draw, lose, points] = nums;
 
-        // 🔥 TAMAMEN API-FOOTBALL FORMATI (Flutter'ın beklediği gibi) 🔥
+        // 🔥 Flutter'ın çökmemesi için JSON'u "all" objesi içine sardık
         standings.push({
             rank: rank,
             team: {
@@ -235,7 +235,7 @@ function parseStandingsHtml(html) {
                 logo: `https://im.mackolik.com/img/logo/buyuk/${teamId}.gif`,
             },
             points: points,
-            goalsDiff: gd,
+            goalsDiff: 0, // Eksik sütunlar şimdilik 0
             form: '',
             description: '',
             all: {
@@ -244,8 +244,8 @@ function parseStandingsHtml(html) {
                 draw: draw,
                 lose: lose,
                 goals: {
-                    for: gf,
-                    against: ga
+                    for: 0,
+                    against: 0
                 }
             }
         });
