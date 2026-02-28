@@ -647,6 +647,11 @@ async function fetchMatchH2H(matchId) {
         
         // DEBUG
         log(`  🔍 H2H ham uzunluk=${raw.length} | ilk200: ${raw.slice(0, 200).replace(/\s+/g, ' ')}`);
+        // SUNUCU BİZİ HATA SAYFASINA ATTIYSA İŞLEMİ DURDUR
+        if (raw.includes('Object moved') || raw.includes('PageError.htm')) {
+            log(`  ⚠️ H2H sayfası bulunamadı veya Maçkolik engelledi (Redirect). matchId=${matchId}`);
+            return { h2h: [], homeForm: [], awayForm: [], homeScorers: [], awayScorers: [] };
+        }
         
         const result = parseH2HHtml(raw);
         log(`  🔍 H2H parse: h2h=${result.h2h.length} form=${result.homeForm.length}/${result.awayForm.length}`);
