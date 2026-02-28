@@ -700,43 +700,30 @@ function parseH2HHtml(html) {
     }
 
     // ── 2. FORM ───────────────────────────────────────────────────────────────
-    // ── 2. FORM ───────────────────────────────────────────────────────────────
-const formParts = html.split('Form Durumu');
-    log(`  🔍 formParts uzunluk: ${formParts.length}`);  // ← buraya
-for (let fi = 1; fi <= 2; fi++) {
-    if (!formParts[fi]) continue;
-    const tableM = formParts[fi].match(/<tbody>([\s\S]*?)<\/tbody>/);
-    if (!tableM) continue;
-    log(`  🔍 fi=${fi} img5 var mı: ${tableM[1].includes('img5')}`);
-    log(`  🔍 fi=${fi} tablo içerik: ${tableM[1].slice(0, 300).replace(/\s+/g, ' ')}`);
-    const formRows = [];
-    const rowRe2 = new RegExp('<tr[^>]*class="row alt[12]"[^>]*>([\\s\\S]*?)<\\/tr>', 'g'); // ← new RegExp
-    let frow;
-    while ((frow = rowRe2.exec(tableM[1])) !== null) {
-        const b      = frow[0];for (let fi = 1; fi <= 2; fi++) {
-    if (!formParts[fi]) continue;
-    const formRows = [];
-    const rowRe2 = new RegExp('<tr[^>]*class="row alt[12]"[^>]*>([\\s\\S]*?)<\\/tr>', 'g');
-    let frow;
-    while ((frow = rowRe2.exec(formParts[fi])) !== null) {
-        const b      = frow[0];
-        const imgM   = b.match(/img5\/(G|B|M)\.png/);
-        if (!imgM) continue;
-        const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
-        if (!scoreM) continue;
-        const dateM  = b.match(/<td>\s*(\d{2}\.\d{2})\s*<\/td>/);
-        formRows.push({
-            date:      dateM ? dateM[1] : '',
-            homeGoals: parseInt(scoreM[1], 10),
-            awayGoals: parseInt(scoreM[2], 10),
-            result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
-        });
-        if (formRows.length >= 10) break;
+    const formParts = html.split('Form Durumu');
+    for (let fi = 1; fi <= 2; fi++) {
+        if (!formParts[fi]) continue;
+        const formRows = [];
+        const rowRe2 = new RegExp('<tr[^>]*class="row alt[12]"[^>]*>([\\s\\S]*?)<\\/tr>', 'g');
+        let frow;
+        while ((frow = rowRe2.exec(formParts[fi])) !== null) {
+            const b      = frow[0];
+            const imgM   = b.match(/img5\/(G|B|M)\.png/);
+            if (!imgM) continue;
+            const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
+            if (!scoreM) continue;
+            const dateM  = b.match(/<td>\s*(\d{2}\.\d{2})\s*<\/td>/);
+            formRows.push({
+                date:      dateM ? dateM[1] : '',
+                homeGoals: parseInt(scoreM[1], 10),
+                awayGoals: parseInt(scoreM[2], 10),
+                result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
+            });
+            if (formRows.length >= 10) break;
+        }
+        if (fi === 1) result.awayForm = formRows;
+        else          result.homeForm = formRows;
     }
-    log(`  🔍 fi=${fi} formRows=${formRows.length}`);
-    if (fi === 1) result.awayForm = formRows;
-    else          result.homeForm = formRows;
-}
 
     // ── 3. EN GOLCÜLER ────────────────────────────────────────────────────────
     const scorerDivRe = /En Golc[üu]ler[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
