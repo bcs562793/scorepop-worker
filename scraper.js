@@ -723,8 +723,8 @@ while ((formDiv = formDivRe.exec(html)) !== null && formIdx < 2) {
         });
         if (formRows.length >= 10) break;
     }
-    if (formIdx === 0) result.homeForm = formRows;
-    else               result.awayForm = formRows;
+    if (formIdx === 0) result.awayForm = formRows;
+    else               result.homeForm = formRows;
     formIdx++;
 }
 
