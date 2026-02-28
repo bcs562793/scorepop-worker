@@ -713,6 +713,12 @@ for (let fi = 1; fi <= 2; fi++) {
     const rowRe2 = new RegExp('<tr[^>]*class="row alt[12]"[^>]*>([\\s\\S]*?)<\\/tr>', 'g'); // ← new RegExp
     let frow;
     while ((frow = rowRe2.exec(tableM[1])) !== null) {
+        const b      = frow[0];for (let fi = 1; fi <= 2; fi++) {
+    if (!formParts[fi]) continue;
+    const formRows = [];
+    const rowRe2 = new RegExp('<tr[^>]*class="row alt[12]"[^>]*>([\\s\\S]*?)<\\/tr>', 'g');
+    let frow;
+    while ((frow = rowRe2.exec(formParts[fi])) !== null) {
         const b      = frow[0];
         const imgM   = b.match(/img5\/(G|B|M)\.png/);
         if (!imgM) continue;
@@ -727,6 +733,7 @@ for (let fi = 1; fi <= 2; fi++) {
         });
         if (formRows.length >= 10) break;
     }
+    log(`  🔍 fi=${fi} formRows=${formRows.length}`);
     if (fi === 1) result.awayForm = formRows;
     else          result.homeForm = formRows;
 }
