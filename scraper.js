@@ -581,16 +581,30 @@ async function collectMatches(targetDate) {
 // Her maç ayrı döküman → 1MB limit yok, backfill güvenle çalışır.
 async function saveToFirestore(db, dateStr, matches) {
     const dateRef  = db.collection('archive_matches').doc(dateStr);
-    const BATCH_SZ = 400;
+    const BATCH_SZ = 100; // 400'den 100'e düşür
 
-    // Index dökümanı (hafif özet)
+    // Index dökümanı
     await dateRef.set({
         last_updated:  new Date().toISOString(),
         total_matches: matches.length,
         match_ids:     matches.map(m => m.fixture.id),
     }, { merge: true });
 
-    // Maçları batch halinde alt koleksiyona yaz
+    // Batch commit — retry ile
+    const commitWithRetry = async (batch, attempt = 1) => {
+        try {
+            await batch.commit();
+        } catch (err) {
+            if (attempt < 3 && (err.code === 4 || err.message.includes('DEADLINE_EXCEEDED'))) {
+                const delay = attempt * 5000;
+                log(`  🔁 Batch timeout, ${delay}ms sonra retry ${attempt}/3...`);
+                await sleep(delay);
+                return commitWithRetry(batch, attempt + 1);
+            }
+            throw err;
+        }
+    };
+
     let batch   = db.batch();
     let opCount = 0;
     let written = 0;
@@ -602,17 +616,16 @@ async function saveToFirestore(db, dateStr, matches) {
         written++;
 
         if (opCount >= BATCH_SZ) {
-            await batch.commit();
+            await commitWithRetry(batch);
             log(`  💾 Batch commit: ${written}/${matches.length}`);
             batch   = db.batch();
             opCount = 0;
+            await sleep(500); // batch arası nefes
         }
     }
 
-    if (opCount > 0) await batch.commit();
+    if (opCount > 0) await commitWithRetry(batch);
 
-    // Özet log
-    // Özet log
     const leagues       = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
     const withScore     = matches.filter(m => m.goals.home !== null).length;
     const withEvents    = matches.filter(m => m.events?.length > 0).length;
