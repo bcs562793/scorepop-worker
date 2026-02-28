@@ -420,9 +420,14 @@ function parseMatch(m, targetDate) {
         }
     }
 
-    // ── IY: m[29] / m[30] ──
-    const htHome = toInt(m[0]);
-    const htAway = toInt(m[1]);
+// ── IY: m[7] = "0-0" formatında ──
+let htHome = null, htAway = null;
+const htStr = typeof m[7] === 'string' ? m[7].replace(/\s/g, '') : '';
+if (htStr.includes('-')) {
+    const parts = htStr.split('-');
+    htHome = toInt(parts[0]);
+    htAway = toInt(parts[1]);
+}
 
     // ── İsabetli şut: m[12] / m[13] ──
     const homeShotsOT = typeof m[12] === 'number' ? m[12] : null;
