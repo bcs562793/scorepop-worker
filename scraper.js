@@ -470,7 +470,7 @@ async function enrichMatchEvents(matches) {
         };
     };
 
-    const CONCURRENCY_LIMIT = 5;
+    const CONCURRENCY_LIMIT = 2;
     let fetchedCount = 0;
     let emptyCount   = 0;
     let failedCount  = 0;
