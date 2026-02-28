@@ -191,6 +191,7 @@ function fetchMatchStandings(matchId) {
     });
 }
 
+// ─── PUAN TABLOSUNU JSON ŞABLONUNA UYDURMA ────────────────────────────────────
 function parseStandingsHtml(html) {
     const standings = [];
 
@@ -215,24 +216,38 @@ function parseStandingsHtml(html) {
         const nameMatch = block.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
         const name = nameMatch ? nameMatch[1].trim() : '';
 
-        // Sayısal sütunlar: O G B M P  (P <b> ile sarılı olabilir)
-        const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(\d+)(?:<\/b>)?<\/td>/g)]
-        .map(m => parseInt(m[1], 10));
+        // Sayısal sütunlar: O G B M A Y AV P  
+        // DİKKAT: Averaj eksi olabileceği için "-?" eklendi!
+        const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(-?\d+)(?:<\/b>)?<\/td>/g)]
+            .map(m => parseInt(m[1], 10));
 
-        if (nums.length < 5) continue;
+        // Eğer satırda 8 veri yoksa (O, G, B, M, A, Y, AV, P) burası puan tablosu değildir
+        if (nums.length < 8) continue;
 
-        const [played, win, draw, lose, points] = nums;
+        const [played, win, draw, lose, gf, ga, gd, points] = nums;
 
+        // 🔥 TAMAMEN API-FOOTBALL FORMATI (Flutter'ın beklediği gibi) 🔥
         standings.push({
-            rank,
+            rank: rank,
             team: {
                 id:   teamId,
                 name: name,
                 logo: `https://im.mackolik.com/img/logo/buyuk/${teamId}.gif`,
             },
-            played, win, draw, lose, points,
-            gf: 0, ga: 0, gd: 0,
-            form: '', description: '',
+            points: points,
+            goalsDiff: gd,
+            form: '',
+            description: '',
+            all: {
+                played: played,
+                win: win,
+                draw: draw,
+                lose: lose,
+                goals: {
+                    for: gf,
+                    against: ga
+                }
+            }
         });
     }
 
