@@ -677,7 +677,7 @@ function parseH2HHtml(html) {
         let row;
         while ((row = rowRe.exec(h2hTableM[0])) !== null) {
             const b = row[0];
-            const linkM = b.match(/href="[^"]*\/Mac\/(\d+)\/[^"]*"[^>]*>\s*<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
+            const linkM = b.match(/\/Mac\/(\d+)\/[^"]*"[^>]*>\s*<b>\s*(\d+)\s*-\s*(\d+)/);
             if (!linkM) continue;
             const matchId_  = parseInt(linkM[1], 10);
             const homeGoals = parseInt(linkM[2], 10);
@@ -701,32 +701,32 @@ function parseH2HHtml(html) {
 
     // ── 2. FORM ───────────────────────────────────────────────────────────────
     const formDivRe = /Form Durumu[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
-    let formDiv;
-    let formIdx = 0;
-    while ((formDiv = formDivRe.exec(html)) !== null && formIdx < 2) {
-        const sec      = formDiv[1];
-        const formRows = [];
-        const rowRe2   = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
-        let frow;
-        while ((frow = rowRe2.exec(sec)) !== null) {
-            const b      = frow[0];
-            const imgM   = b.match(/img5\/(G|B|M)\.png/);
-            if (!imgM) continue;
-            const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
-            if (!scoreM) continue;
-            const dateM  = b.match(/<td>\s*(\d{2}\.\d{2})\s*<\/td>/);
-            formRows.push({
-                date:      dateM ? dateM[1] : '',
-                homeGoals: parseInt(scoreM[1], 10),
-                awayGoals: parseInt(scoreM[2], 10),
-                result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
-            });
-            if (formRows.length >= 10) break;
-        }
-        if (formIdx === 0) result.homeForm = formRows;
-        else               result.awayForm = formRows;
-        formIdx++;
+let formDiv;
+let formIdx = 0;
+while ((formDiv = formDivRe.exec(html)) !== null && formIdx < 2) {
+    const sec      = formDiv[1];
+    const formRows = [];
+    const rowRe2   = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
+    let frow;
+    while ((frow = rowRe2.exec(sec)) !== null) {
+        const b      = frow[0];
+        const imgM   = b.match(/img5\/(G|B|M)\.png/);
+        if (!imgM) continue;
+        const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
+        if (!scoreM) continue;
+        const dateM  = b.match(/<td>\s*(\d{2}\.\d{2})\s*<\/td>/);
+        formRows.push({
+            date:      dateM ? dateM[1] : '',
+            homeGoals: parseInt(scoreM[1], 10),
+            awayGoals: parseInt(scoreM[2], 10),
+            result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
+        });
+        if (formRows.length >= 10) break;
     }
+    if (formIdx === 0) result.homeForm = formRows;
+    else               result.awayForm = formRows;
+    formIdx++;
+}
 
     // ── 3. EN GOLCÜLER ────────────────────────────────────────────────────────
     const scorerDivRe = /En Golc[üu]ler[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
