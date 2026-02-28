@@ -3,9 +3,9 @@
  * v2: Alt koleksiyon yapısı (1MB limit yok), lineups desteği.
  *
  * Kullanım:
- * node scraper.js --mode=daily
- * node scraper.js --mode=single --date=2026-02-24
- * node scraper.js --mode=backfill --from=2026-02-01 --to=2026-02-28
+ *   node scraper.js --mode=daily
+ *   node scraper.js --mode=single --date=2026-02-24
+ *   node scraper.js --mode=backfill --from=2026-02-01 --to=2026-02-28
  */
 
 const https = require('https');
@@ -137,17 +137,11 @@ function fetchMatchStats(matchId) {
 function fetchMatchStandings(matchId) {
     return new Promise((resolve) => {
         const url = `https://arsiv.mackolik.com/AjaxHandlers/StandingHandler.aspx?command=matchStanding&id=${matchId}&sv=1`;
-        
-        // 🔥 GÜVENLİK DUVARINI (502 HATASINI) AŞAN TARAYICI KİMLİĞİ 🔥
         const options = {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'text/html, */*; q=0.01',
-                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Referer': `https://arsiv.mackolik.com/Mac/${matchId}/`,
-                'Connection': 'keep-alive',
-                'Cookie': 'OptanonAlertBoxClosed=2024-01-01T00:00:00.000Z;'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Accept':     'text/html',
+                'Referer':    `https://arsiv.mackolik.com/Mac/${matchId}/`,
             }
         };
 
@@ -160,7 +154,7 @@ function fetchMatchStandings(matchId) {
                 res.on('data', chunk => raw += chunk);
                 res.on('end', () => {
                     // ── 502 retry ──
-                    if (raw.includes('502 Bad Gateway') || raw.includes('503 Service') || res.statusCode === 502) {
+                    if (raw.includes('502 Bad Gateway') || raw.includes('503 Service')) {
                         if (tryNum < MAX_RETRY) {
                             const delay = RETRY_DELAY[tryNum - 1] || 5000;
                             log(`  🔁 Standings 502 matchId=${matchId}, ${delay}ms retry ${tryNum}/${MAX_RETRY}...`);
@@ -175,7 +169,7 @@ function fetchMatchStandings(matchId) {
                     try {
                         const result = parseStandingsHtml(raw);
                         if (result.length === 0 && raw.trim().length > 0 && !raw.includes('502')) {
-                            log(`  ⚠️  Standings boş matchId=${matchId}`);
+                            log(`  ⚠️  Standings boş matchId=${matchId} | ham: ${raw.slice(0, 150).replace(/\s+/g, ' ')}`);
                         }
                         resolve(result);
                     } catch(e) {
@@ -200,13 +194,14 @@ function fetchMatchStandings(matchId) {
 function parseStandingsHtml(html) {
     const standings = [];
 
+    // data-teamid her yerde olabilir, sıra önemli değil
     const rowRegex = /<tr[^>]+class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
     let row;
 
     while ((row = rowRegex.exec(html)) !== null) {
         const block = row[0];
 
-        // teamId
+        // teamId — iki olası konum
         const teamIdMatch = block.match(/data-teamid="(\d+)"/);
         if (!teamIdMatch) continue;
         const teamId = parseInt(teamIdMatch[1], 10);
@@ -216,51 +211,29 @@ function parseStandingsHtml(html) {
         if (!rankMatch) continue;
         const rank = parseInt(rankMatch[1], 10);
 
-        // Takım adı
+        // Takım adı — href içindeki text
         const nameMatch = block.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
         const name = nameMatch ? nameMatch[1].trim() : '';
 
-        // 🔥 Gelişmiş Regex: <b> tag'lerini atlar, - (eksi averaj) sayıları yakalar
-        const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(-?\d+)(?:<\/b>)?<\/td>/g)]
-            .map(m => parseInt(m[1], 10));
+        // Sayısal sütunlar: O G B M P
+        // Sayısal sütunlar: O G B M P  (P <b> ile sarılı olabilir)
+        const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(\d+)(?:<\/b>)?<\/td>/g)]
+        .map(m => parseInt(m[1], 10));
 
         if (nums.length < 5) continue;
 
         const [played, win, draw, lose, points] = nums;
 
-        // 🔥 DUAL FORMAT: Hem Node.js hem Flutter çökmesin diye iki yapıyı birleştirdik
         standings.push({
-            rank: rank,
+            rank,
             team: {
                 id:   teamId,
                 name: name,
                 logo: `https://im.mackolik.com/img/logo/buyuk/${teamId}.gif`,
             },
-            
-            // Backend çökmesini engelleyen düz yapı
-            played: played, 
-            win: win, 
-            draw: draw, 
-            lose: lose, 
-            points: points,
-            gf: 0, 
-            ga: 0, 
-            gd: 0,
-            form: '', 
-            description: '',
-            goalsDiff: 0,
-
-            // Flutter'ın beklediği iç içe geçmiş API-Football yapısı
-            all: {
-                played: played,
-                win: win,
-                draw: draw,
-                lose: lose,
-                goals: {
-                    for: 0,
-                    against: 0
-                }
-            }
+            played, win, draw, lose, points,
+            gf: 0, ga: 0, gd: 0,
+            form: '', description: '',
         });
     }
 
@@ -605,8 +578,6 @@ async function collectMatches(targetDate) {
 }
 
 // ─── FİRESTORE KAYDET ────────────────────────────────────────────────────────
-// Yapı: archive_matches/{date}/fixtures/{matchId}
-// Her maç ayrı döküman → 1MB limit yok, backfill güvenle çalışır.
 async function saveToFirestore(db, dateStr, matches) {
     const dateRef = db.collection('archive_matches').doc(dateStr);
 
@@ -663,6 +634,7 @@ async function saveToFirestore(db, dateStr, matches) {
     log(`  📊 Stats: ${withStats}/${matches.length}`);
     log(`  🏆 Standings: ${withStandings}/${matches.length}`);
 }
+
 
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
 async function processDate(db, targetDate) {
