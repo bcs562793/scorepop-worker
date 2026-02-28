@@ -679,7 +679,7 @@ function parseH2HHtml(html) {
             const b = row[0];
 
             // Skor linki — "v" ise gelecek maç, atla
-            const linkM = b.match(/href="[^"]*\/Mac\/(\d+)\/[^"]*"[^>]*><b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
+            const linkM = b.match(/href="[^"]*\/Mac\/(\d+)\/[^"]*"[^>]*>\s*<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
             if (!linkM) continue;
 
             const matchId_  = parseInt(linkM[1], 10);
@@ -722,57 +722,54 @@ function parseH2HHtml(html) {
     }
 
     // ── 2. FORM (iki bölüm: ev - dep) ────────────────────────────────────────
-    const formDivRe = /<div class="md">([\s\S]*?Form Durumu[\s\S]*?)<\/div>/g;
-    let formDiv;
-    let formIdx = 0;
-    while ((formDiv = formDivRe.exec(html)) !== null && formIdx < 2) {
-        const sec    = formDiv[0];
-        const formRows = [];
-        const rowRe2 = /<tr class="row alt[12]">([\s\S]*?)<\/tr>/g;
-        let frow;
-        while ((frow = rowRe2.exec(sec)) !== null) {
-            const b = frow[0];
-            const imgM   = b.match(/img5\/(G|B|M)\.png/);
-            if (!imgM) continue; // gelecek maç
-            const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
-            if (!scoreM) continue;
-            const dateM  = b.match(/<td>\s*(\d{2}\.\d{2})\s*<\/td>/);
-            formRows.push({
-                date:      dateM   ? dateM[1]             : '',
-                homeGoals: parseInt(scoreM[1], 10),
-                awayGoals: parseInt(scoreM[2], 10),
-                result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
-            });
-            if (formRows.length >= 10) break;
-        }
-        if (formIdx === 0) result.homeForm = formRows;
-        else               result.awayForm = formRows;
-        formIdx++;
+    const formDivRe = /Form Durumu[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
+let formDiv;
+let formIdx = 0;
+while ((formDiv = formDivRe.exec(html)) !== null && formIdx < 2) {
+    const sec = formDiv[1]; // tablo içeriği
+    const formRows = [];
+    const rowRe2 = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
+    let frow;
+    while ((frow = rowRe2.exec(sec)) !== null) {
+        const b = frow[0];
+        const imgM   = b.match(/img5\/(G|B|M)\.png/);
+        if (!imgM) continue;
+        const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
+        if (!scoreM) continue;
+        const dateM  = b.match(/<td>\s*(\d{2}\.\d{2})\s*<\/td>/);
+        formRows.push({
+            date:      dateM ? dateM[1] : '',
+            homeGoals: parseInt(scoreM[1], 10),
+            awayGoals: parseInt(scoreM[2], 10),
+            result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
+        });
+        if (formRows.length >= 10) break;
     }
+    if (formIdx === 0) result.homeForm = formRows;
+    else               result.awayForm = formRows;
+    formIdx++;
+}
 
     // ── 3. EN GOLCÜLER (iki bölüm: ev - dep) ─────────────────────────────────
-    const scorerDivRe = /<div class="md"[^>]*>([\s\S]*?En Golc[üu]ler[\s\S]*?)<\/div>/g;
-    let scorerDiv;
-    let scorerIdx = 0;
-    while ((scorerDiv = scorerDivRe.exec(html)) !== null && scorerIdx < 2) {
-        const sec     = scorerDiv[0];
-        const scorers = [];
-        const rowRe3  = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-        let srow;
-        while ((srow = rowRe3.exec(sec)) !== null) {
-            const b     = srow[0];
-            const nameM  = b.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
-            const goalsM = b.match(/<b>(\d+)<\/b>/);
-            if (!nameM || !goalsM) continue;
-            scorers.push({ name: nameM[1].trim(), goals: parseInt(goalsM[1], 10) });
-            if (scorers.length >= 3) break;
-        }
-        if (scorerIdx === 0) result.homeScorers = scorers;
-        else                 result.awayScorers = scorers;
-        scorerIdx++;
+    const scorerDivRe = /En Golc[üu]ler[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
+let scorerDiv;
+let scorerIdx = 0;
+while ((scorerDiv = scorerDivRe.exec(html)) !== null && scorerIdx < 2) {
+    const sec     = scorerDiv[1];
+    const scorers = [];
+    const rowRe3  = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+    let srow;
+    while ((srow = rowRe3.exec(sec)) !== null) {
+        const b     = srow[0];
+        const nameM  = b.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
+        const goalsM = b.match(/<b>(\d+)<\/b>/);
+        if (!nameM || !goalsM) continue;
+        scorers.push({ name: nameM[1].trim(), goals: parseInt(goalsM[1], 10) });
+        if (scorers.length >= 3) break;
     }
-
-    return result;
+    if (scorerIdx === 0) result.homeScorers = scorers;
+    else                 result.awayScorers = scorers;
+    scorerIdx++;
 }
 
 // ─── FİRESTORE KAYDET ────────────────────────────────────────────────────────
