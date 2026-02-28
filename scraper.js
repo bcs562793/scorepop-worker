@@ -3,9 +3,9 @@
  * Flashscore bot ile aynı Firebase yapısını kullanır.
  *
  * Kullanım:
- *   node mackolik_firebase.js --mode=daily
- *   node mackolik_firebase.js --mode=single --date=2026-02-24
- *   node mackolik_firebase.js --mode=backfill --from=2026-02-01 --to=2026-02-28
+ *   node scraper.js --mode=daily
+ *   node scraper.js --mode=single --date=2026-02-24
+ *   node scraper.js --mode=backfill --from=2026-02-01 --to=2026-02-28
  */
 
 const https = require('https');
@@ -77,7 +77,6 @@ const toMacDate = d => {
 // ─── MACKOLİK API ─────────────────────────────────────────────────────────────
 function fetchMackolik(dateStr) {
     return new Promise((resolve, reject) => {
-        // dateStr: 'DD/MM/YYYY' → encodeURIComponent gerekli
         const url = `https://vd.mackolik.com/livedata?date=${encodeURIComponent(dateStr)}`;
         const options = {
             headers: {
@@ -98,7 +97,6 @@ function fetchMackolik(dateStr) {
 }
 
 // ─── SPOR TİPİ ────────────────────────────────────────────────────────────────
-// m[36][11]: 1=futbol, 2=basketbol
 const SPORT_TYPE = { 1: 'Football', 2: 'Basketball', 3: 'Other' };
 
 // Durum kodu → flashscore uyumlu status objesi
@@ -109,40 +107,12 @@ function parseStatus(statusCode, statusText) {
         8:  { long: 'Match Finished',  short: 'PEN', elapsed: 120  },
         9:  { long: 'Postponed',       short: 'PST', elapsed: null },
         20: { long: 'Extra Time',      short: 'ET',  elapsed: 105  },
-        13: { long: 'Match Finished',  short: 'FT',  elapsed: null },  // Basketbol
+        13: { long: 'Match Finished',  short: 'FT',  elapsed: null },
     };
     return { ...(map[statusCode] || { long: statusText || 'Unknown', short: 'UN', elapsed: null }), extra: null };
 }
 
 // ─── TEK MAÇ PARSE ────────────────────────────────────────────────────────────
-/*
-  Mackolik m dizisi:
-  [0]  matchId
-  [1]  homeId
-  [2]  homeName
-  [3]  awayId
-  [4]  awayName
-  [5]  statusCode
-  [6]  statusText (MS / Ert. / vb.)
-  [7]  scoreStr ("2-1")
-  [10] redCard home (int)
-  [11] redCard away (int)
-  [12] home shots on target (int)
-  [13] away shots on target (int)
-  [16] time string ("20:45")
-  [17] isNeutral? (1=nötr)
-  [18] odd1
-  [19] oddX
-  [20] odd2
-  [29] IY home string
-  [30] IY away string
-  [31] final home goals (string)
-  [32] final away goals (string)
-  [35] date string ("24/02/2026")
-  [36] [countryId, countryName, leagueId, leagueName, tournId, season, "", aeleme, ?, leagueCode, ?, sportType]
-  [37] hasOdds
-*/
-// ─── TEK MAÇ PARSE (EKSTRA BÜTÜN VERİLER SİLİNDİ, %100 FLASHSCORE KLONU) ──────
 function parseMatch(m, targetDate) {
     if (!Array.isArray(m) || m.length < 37) return null;
 
@@ -151,21 +121,21 @@ function parseMatch(m, targetDate) {
     if (sportTypeId !== 1) return null;
 
     const matchId    = parseInt(m[0], 10) || 0;
-    const homeId     = parseInt(m[1], 10) || 0; 
-    const awayId     = parseInt(m[3], 10) || 0; 
-    const countryId  = parseInt(li[0], 10) || 0; 
+    const homeId     = parseInt(m[1], 10) || 0;
+    const awayId     = parseInt(m[3], 10) || 0;
+    const countryId  = parseInt(li[0], 10) || 0;
     const leagueId   = parseInt(li[2], 10) || 0;
     const seasonYear = parseInt(targetDate.getFullYear(), 10);
 
-    const toInt = v => { 
+    const toInt = v => {
         if (v === null || v === undefined || v === '') return null;
-        const n = parseInt(v, 10); 
-        return isNaN(n) ? null : n; 
+        const n = parseInt(v, 10);
+        return isNaN(n) ? null : n;
     };
 
     let homeGoals = toInt(m[12]);
     let awayGoals = toInt(m[13]);
-    
+
     let htHome = null;
     let htAway = null;
     const htStr = typeof m[7] === 'string' ? m[7].replace(/\s/g, '') : '';
@@ -176,15 +146,15 @@ function parseMatch(m, targetDate) {
     }
 
     const statusCode = parseInt(m[5], 10) || 0;
-    const statusText = typeof m[6] === 'string'  ? m[6] : '';
+    const statusText = typeof m[6] === 'string' ? m[6] : '';
     const status     = parseStatus(statusCode, statusText);
 
     const countryName = li[1]  ?? 'Unknown';
     const leagueName  = li[3]  ?? 'Unknown';
-    const dateStr   = formatDate(targetDate);
-    const timeStr   = typeof m[16] === 'string' ? m[16] : '00:00';
-    const isoDate   = `${dateStr}T${timeStr}:00+03:00`;
-    const timestamp = parseInt(Math.floor(targetDate.getTime() / 1000), 10);
+    const dateStr     = formatDate(targetDate);
+    const timeStr     = typeof m[16] === 'string' ? m[16] : '00:00';
+    const isoDate     = `${dateStr}T${timeStr}:00+03:00`;
+    const timestamp   = parseInt(Math.floor(targetDate.getTime() / 1000), 10);
 
     const homeWin = homeGoals !== null && awayGoals !== null
         ? (homeGoals > awayGoals ? true : homeGoals === awayGoals ? null : false) : null;
@@ -195,7 +165,6 @@ function parseMatch(m, targetDate) {
     const awayLogoUrl   = awayId > 0 ? `https://im.mackolik.com/img/logo/buyuk/${awayId}.gif` : null;
     const leagueLogoUrl = countryId > 0 ? `https://im.mackolik.com/img/groups/${countryId}.gif` : null;
 
-    // 🔥 DİKKAT: FAZLALIK OLAN stats, odds, lineups, red_cards TAMAMEN SİLİNDİ 🔥
     return {
         fixture: {
             id:        matchId,
@@ -220,14 +189,14 @@ function parseMatch(m, targetDate) {
         },
         teams: {
             home: {
-                id:     0,             // FLASHSCORE UYUMU
-                name:   m[2] || "Unknown",
+                id:     0,
+                name:   m[2] || 'Unknown',
                 logo:   homeLogoUrl,
                 winner: homeWin
             },
             away: {
-                id:     0,             // FLASHSCORE UYUMU
-                name:   m[4] || "Unknown",
+                id:     0,
+                name:   m[4] || 'Unknown',
                 logo:   awayLogoUrl,
                 winner: awayWin
             }
@@ -242,81 +211,147 @@ function parseMatch(m, targetDate) {
             extratime: { home: null,      away: null      },
             penalty:   { home: null,      away: null      },
         },
-        events: [] 
+        events: []
     };
 }
 
-// ─── MAÇ DETAYLARI (EVENTS) KESİN TİP DÖNÜŞÜMÜ İLE ─────────────────────────
-async function enrichMatchEvents(matches) {
-    log(`\n🔍 Maç detayları (Events) çekiliyor... Toplam: ${matches.length} maç`);
-    
-    const CONCURRENCY_LIMIT = 15; 
+// ─── MAÇ DETAYLARINI (EVENTS) MACKOLİK API'DEN ÇEK ──────────────────────────
+function fetchMatchDetails(matchId) {
+    return new Promise((resolve) => {
+        const url = `https://arsiv.mackolik.com/Match/MatchData.aspx?t=dtl&id=${matchId}&s=0`;
+        const options = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Accept':     'application/json',
+                'Referer':    `https://arsiv.mackolik.com/Mac/${matchId}/`
+            }
+        };
+        https.get(url, options, res => {
+            let raw = '';
+            res.on('data', chunk => raw += chunk);
+            res.on('end', () => {
+                try {
+                    const parsed = JSON.parse(raw);
+                    // ── DÜZELTME 1: Boş/eksik events loglanıyor ──
+                    if (!parsed?.e || !Array.isArray(parsed.e) || parsed.e.length === 0) {
+                        log(`  ⚠️  Events boş: matchId=${matchId} | ham: ${raw.slice(0, 120)}`);
+                    }
+                    resolve(parsed);
+                } catch(e) {
+                    logErr(`  ❌ JSON parse hatası matchId=${matchId}: ${e.message} | ham: ${raw.slice(0, 120)}`);
+                    resolve(null);
+                }
+            });
+        }).on('error', err => {
+            logErr(`  ❌ HTTP hatası matchId=${matchId}: ${err.message}`);
+            resolve(null);
+        });
+    });
+}
 
-    for (let i = 0; i < matches.length; i += CONCURRENCY_LIMIT) {
-        const chunk = matches.slice(i, i + CONCURRENCY_LIMIT);
-        
+// ─── MAÇ DETAYLARI (EVENTS) ENRİCH ──────────────────────────────────────────
+async function enrichMatchEvents(matches) {
+    log(`\n🔍 Events çekiliyor... Toplam: ${matches.length} maç`);
+
+    // Events çekilecek maçlar (sadece biten maçlar)
+    const eligible = matches.filter(m => !['NS', 'PST', 'CANC'].includes(m.fixture.status.short));
+    log(`  📌 Uygun maç (NS/PST/CANC dışı): ${eligible.length}`);
+
+    const CONCURRENCY_LIMIT = 15;
+    let fetchedCount  = 0;
+    let emptyCount    = 0;
+    let failedCount   = 0;
+
+    for (let i = 0; i < eligible.length; i += CONCURRENCY_LIMIT) {
+        const chunk = eligible.slice(i, i + CONCURRENCY_LIMIT);
+
         await Promise.all(chunk.map(async (match) => {
             const matchId = match.fixture.id;
+            const details = await fetchMatchDetails(matchId);
 
-            if (['NS', 'PST', 'CANC'].includes(match.fixture.status.short)) {
+            if (!details) {
+                failedCount++;
                 return;
             }
 
-            const details = await fetchMatchDetails(matchId);
-            
-            if (details && details.e && Array.isArray(details.e)) {
-                match.events = details.e.map(ev => {
-                    const teamCode   = ev[0]; 
-                    const minute     = ev[1]; 
-                    const playerName = ev[3];
-                    const typeCode   = ev[4];
-                    const extra      = ev[5] || {};
+            if (!details.e || !Array.isArray(details.e) || details.e.length === 0) {
+                emptyCount++;
+                return;
+            }
 
-                    const teamSide = teamCode === 1 ? 'home' : 'away';
-                    const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
+            fetchedCount++;
 
-                    let typeStr    = 'Other';
-                    let detailStr  = '';
-                    let assistName = null;
+            match.events = details.e.map(ev => {
+                const teamCode   = ev[0];
+                const minute     = ev[1];
+                const playerName = ev[3];
+                const typeCode   = ev[4];
+                const extra      = ev[5] || {};
 
-                    if (typeCode === 1) {
-                        typeStr = 'Goal';
+                const teamSide = teamCode === 1 ? 'home' : 'away';
+                const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
+
+                let typeStr    = 'Other';
+                let detailStr  = '';
+                let assistName = null;
+
+                switch (typeCode) {
+                    case 1:
+                        // ── Gol ──
+                        typeStr   = 'Goal';
                         detailStr = 'Normal Goal';
                         if (extra.astName) assistName = `(${extra.astName})`;
-                    } else if (typeCode === 2 || typeCode === 3 || typeCode === 6) {
-                        typeStr = 'Other';
-                        detailStr = '';
-                        assistName = null;
-                    } else if (typeCode === 4) {
-                        typeStr = 'subst';
+                        break;
+                    case 2:
+                        // ── DÜZELTME 2: Sarı kart ──
+                        typeStr   = 'Card';
+                        detailStr = 'Yellow Card';
+                        break;
+                    case 3:
+                        // ── DÜZELTME 2: Kırmızı kart ──
+                        typeStr   = 'Card';
+                        detailStr = 'Red Card';
+                        break;
+                    case 6:
+                        // ── DÜZELTME 2: Sarı-kırmızı kart ──
+                        typeStr   = 'Card';
+                        detailStr = 'Yellow Red Card';
+                        break;
+                    case 4:
+                        // ── Değişiklik ──
+                        typeStr   = 'subst';
                         detailStr = 'Substitution';
-                        assistName = null; // Flashscore'da çıkan oyuncu assistName'e yazılmaz null kalır.
-                    }
+                        break;
+                    default:
+                        typeStr   = 'Other';
+                        detailStr = '';
+                        break;
+                }
 
-                    // 🔥 BÜTÜN TİPLER (INT/STRING) ZORLA KORUMA ALTINA ALINDI 🔥
-                    return {
-                        minute: Number(minute) || 0,
-                        minuteExtra: null,
-                        type: String(typeStr),
-                        detail: String(detailStr),
-                        playerName: playerName ? String(playerName) : "",
-                        assistName: assistName ? String(assistName) : null,
-                        teamSide: String(teamSide),
-                        teamId: 0, // FLASHSCORE UYUMU
-                        teamName: String(teamName)
-                    };
-                });
-            }
+                return {
+                    minute:      Number(minute) || 0,
+                    minuteExtra: null,
+                    type:        String(typeStr),
+                    detail:      String(detailStr),
+                    playerName:  playerName ? String(playerName) : '',
+                    assistName:  assistName ? String(assistName) : null,
+                    teamSide:    String(teamSide),
+                    teamId:      0,
+                    teamName:    String(teamName)
+                };
+            });
         }));
-        
-        await sleep(500); 
+
+        if (i + CONCURRENCY_LIMIT < eligible.length) {
+            await sleep(500);
+        }
     }
-    
-    log(`  ✅ Events başarıyla saniyeler içinde maçlara eklendi.`);
+
+    log(`  ✅ Events tamamlandı → Dolu: ${fetchedCount} | Boş: ${emptyCount} | Hata: ${failedCount}`);
     return matches;
 }
 
-// ─── MAÇLARI ÇEK & PARSE ET ───────────────────────────────────────────────────
+// ─── MAÇLARI ÇEK & PARSE ET ──────────────────────────────────────────────────
 async function collectMatches(targetDate) {
     const macDate = toMacDate(targetDate);
     log(`  📡 Mackolik API: ${macDate}`);
@@ -333,7 +368,7 @@ async function collectMatches(targetDate) {
     return matches;
 }
 
-// ─── FİRESTORE KAYDET ──────────────────────────────────────────────────────────
+// ─── FİRESTORE KAYDET ────────────────────────────────────────────────────────
 async function saveToFirestore(db, dateStr, matches) {
     await db.collection('archive_matches').doc(dateStr).set({
         fixtures:      matches,
@@ -346,37 +381,14 @@ async function saveToFirestore(db, dateStr, matches) {
     const leagues = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0, 6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length - 6}` : ''}`);
 
-    const sports = [...new Set(matches.map(m => m.league.sport))];
-    log(`  🏅 Sporlar: ${sports.join(', ')}`);
-
     const withScore = matches.filter(m => m.goals.home !== null).length;
     log(`  ⚽ Skoru olan: ${withScore}/${matches.length}`);
+
+    // ── DÜZELTME 3: Events özeti loglanıyor ──
+    const withEvents  = matches.filter(m => m.events && m.events.length > 0).length;
+    const totalEvents = matches.reduce((sum, m) => sum + (m.events?.length || 0), 0);
+    log(`  🎯 Events olan maç: ${withEvents}/${matches.length} | Toplam event: ${totalEvents}`);
 }
-
-// ─── MAÇ DETAYLARINI (EVENTS) MACKOLİK API'DEN ÇEK ───────────────────────────
-function fetchMatchDetails(matchId) {
-    return new Promise((resolve) => {
-        const url = `https://arsiv.mackolik.com/Match/MatchData.aspx?t=dtl&id=${matchId}&s=0`;
-        const options = {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Accept': 'application/json',
-                'Referer': `https://arsiv.mackolik.com/Mac/${matchId}/`
-            }
-        };
-        https.get(url, options, res => {
-            let raw = '';
-            res.on('data', chunk => raw += chunk);
-            res.on('end', () => {
-                try { resolve(JSON.parse(raw)); }
-                catch(e) { resolve(null); }
-            });
-        }).on('error', () => resolve(null));
-    });
-}
-
-
-
 
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
 async function processDate(db, targetDate) {
@@ -386,16 +398,14 @@ async function processDate(db, targetDate) {
     let matches = await collectMatches(targetDate);
 
     if (matches.length > 0) {
-        // 🔥 İŞTE BURADA EVENTS BİLGİLERİNİ MAÇLARA ENTEGRE EDİYORUZ 🔥
         matches = await enrichMatchEvents(matches);
-        
         await saveToFirestore(db, dateStr, matches);
     } else {
         log(`  ❌ Kayıt yok: ${dateStr}`);
     }
 }
 
-// ─── ANA AKIŞ ─────────────────────────────────────────────────────────────────
+// ─── ANA AKIŞ ────────────────────────────────────────────────────────────────
 (async () => {
     let db;
     try { db = initFirebase(); }
@@ -422,7 +432,7 @@ async function processDate(db, targetDate) {
                 const d = new Date(start);
                 d.setUTCDate(start.getUTCDate() + i);
                 await processDate(db, d);
-                if (i < total - 1) await sleep(800 + Math.random() * 400); // API'ya nazik ol
+                if (i < total - 1) await sleep(800 + Math.random() * 400);
             }
         } else {
             throw new Error(`Bilinmeyen mod: ${MODE}. (daily | single | backfill)`);
