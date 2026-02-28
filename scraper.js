@@ -702,6 +702,7 @@ function parseH2HHtml(html) {
     // ── 2. FORM ───────────────────────────────────────────────────────────────
     // ── 2. FORM ───────────────────────────────────────────────────────────────
 const formParts = html.split('Form Durumu');
+    log(`  🔍 formParts uzunluk: ${formParts.length}`);  // ← buraya
 for (let fi = 1; fi <= 2; fi++) {
     if (!formParts[fi]) continue;
     const tableM = formParts[fi].match(/<table[^>]*>([\s\S]*?)<\/table>/);
