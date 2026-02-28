@@ -384,6 +384,9 @@ async function enrichMatchEvents(matches) {
                 away: parsePlayers(details.a, 11),
             };
 
+            // ── Stats (ayrı endpoint) ──
+            match.stats = await fetchMatchStats(matchId);
+
             // ── Events ──
             if (!details.e || !Array.isArray(details.e) || details.e.length === 0) {
                 emptyCount++;
