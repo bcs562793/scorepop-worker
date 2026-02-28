@@ -285,18 +285,30 @@ function fetchMatchDetails(matchId) {
         attempt(1);
     });
 }
-// ─── MAÇ DETAYLARI (EVENTS) ENRİCH ──────────────────────────────────────────
+
 async function enrichMatchEvents(matches) {
     log(`\n🔍 Events çekiliyor... Toplam: ${matches.length} maç`);
 
-    // Events çekilecek maçlar (sadece biten maçlar)
     const eligible = matches.filter(m => !['NS', 'PST', 'CANC'].includes(m.fixture.status.short));
     log(`  📌 Uygun maç (NS/PST/CANC dışı): ${eligible.length}`);
 
+    const parsePlayers = (arr, count) => {
+        if (!Array.isArray(arr)) return { startXI: [], substitutes: [] };
+        const players = arr.map(p => ({
+            id:     Number(p[0]) || 0,
+            name:   String(p[1] || ''),
+            number: Number(p[2]) || 0,
+        }));
+        return {
+            startXI:     players.slice(0, count),
+            substitutes: players.slice(count),
+        };
+    };
+
     const CONCURRENCY_LIMIT = 15;
-    let fetchedCount  = 0;
-    let emptyCount    = 0;
-    let failedCount   = 0;
+    let fetchedCount = 0;
+    let emptyCount   = 0;
+    let failedCount  = 0;
 
     for (let i = 0; i < eligible.length; i += CONCURRENCY_LIMIT) {
         const chunk = eligible.slice(i, i + CONCURRENCY_LIMIT);
@@ -310,9 +322,16 @@ async function enrichMatchEvents(matches) {
                 return;
             }
 
+            // ── Lineup: details geldiği sürece kaydet (events boş olsa bile) ──
+            match.lineups = {
+                home: parsePlayers(details.h, 11),
+                away: parsePlayers(details.a, 11),
+            };
+
+            // ── Events ──
             if (!details.e || !Array.isArray(details.e) || details.e.length === 0) {
                 emptyCount++;
-                return;
+                return; // lineup kaydedildi, events yok, devam
             }
 
             fetchedCount++;
@@ -327,34 +346,29 @@ async function enrichMatchEvents(matches) {
                 const teamSide = teamCode === 1 ? 'home' : 'away';
                 const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
 
-                let typeStr    = 'Other';
-                let detailStr  = '';
+                let typeStr   = 'Other';
+                let detailStr = '';
                 let assistName = null;
 
                 switch (typeCode) {
                     case 1:
-                        // ── Gol ──
                         typeStr   = 'Goal';
                         detailStr = 'Normal Goal';
                         if (extra.astName) assistName = `(${extra.astName})`;
                         break;
                     case 2:
-                        // ── DÜZELTME 2: Sarı kart ──
                         typeStr   = 'Card';
                         detailStr = 'Yellow Card';
                         break;
                     case 3:
-                        // ── DÜZELTME 2: Kırmızı kart ──
                         typeStr   = 'Card';
                         detailStr = 'Red Card';
                         break;
                     case 6:
-                        // ── DÜZELTME 2: Sarı-kırmızı kart ──
                         typeStr   = 'Card';
                         detailStr = 'Yellow Red Card';
                         break;
                     case 4:
-                        // ── Değişiklik ──
                         typeStr   = 'subst';
                         detailStr = 'Substitution';
                         break;
