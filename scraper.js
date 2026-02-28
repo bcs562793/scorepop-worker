@@ -133,6 +133,79 @@ function fetchMatchStats(matchId) {
     });
 }
 
+// ─── PUAN TABLOSUNU ÇEK ──────────────────────────────────────────────────────
+function fetchMatchStandings(matchId) {
+    return new Promise((resolve) => {
+        const url = `https://arsiv.mackolik.com/AjaxHandlers/StandingHandler.aspx?command=matchStanding&id=${matchId}&sv=1`;
+        const options = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Accept':     'text/html',
+                'Referer':    `https://arsiv.mackolik.com/Mac/${matchId}/`,
+            }
+        };
+        https.get(url, options, res => {
+            let raw = '';
+            res.on('data', chunk => raw += chunk);
+            res.on('end', () => {
+                try { resolve(parseStandingsHtml(raw)); }
+                catch(e) {
+                    logErr(`  ❌ Standings parse hatası matchId=${matchId}: ${e.message}`);
+                    resolve([]);
+                }
+            });
+        }).on('error', () => resolve([]));
+    });
+}
+
+function parseStandingsHtml(html) {
+    const standings = [];
+
+    // Her satır: <tr class="row alt1|alt2" data-teamid="X">
+    const rowRegex = /<tr class="row alt[12]"[^>]*data-teamid="(\d+)"[^>]*>[\s\S]*?<\/tr>/g;
+    let row;
+
+    while ((row = rowRegex.exec(html)) !== null) {
+        const block = row[0];
+        const teamId = parseInt(row[1], 10);
+
+        // Sıra
+        const rankMatch  = block.match(/<td[^>]*><b>(\d+)<\/b><\/td>/);
+        const rank = rankMatch ? parseInt(rankMatch[1], 10) : 0;
+
+        // Takım adı
+        const nameMatch  = block.match(/target="_blank"[^>]*>\s*([\s\S]*?)\s*<\/a>/);
+        const name = nameMatch ? nameMatch[1].replace(/\s+/g, ' ').trim() : '';
+
+        // Sayısal sütunlar: O G B M P
+        const nums = [...block.matchAll(/<td align="right">(\d+)<\/td>/g)].map(m => parseInt(m[1], 10));
+        if (nums.length < 5) continue;
+
+        const [played, win, draw, lose, points] = nums;
+
+        standings.push({
+            rank,
+            team: {
+                id:   teamId,
+                name: name,
+                logo: `https://im.mackolik.com/img/logo/buyuk/${teamId}.gif`,
+            },
+            played,
+            win,
+            draw,
+            lose,
+            points,
+            gf:          0, // Mackolik standings'de yok
+            ga:          0,
+            gd:          0,
+            form:        '',
+            description: '',
+        });
+    }
+
+    return standings;
+}
+
 function parseStatsHtml(html) {
     const stats = [];
 
