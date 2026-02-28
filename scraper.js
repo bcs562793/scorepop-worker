@@ -337,6 +337,7 @@ function parseMatch(m, targetDate) {
         },
         events:  [],
         standings: [],
+        stats:     [],
         // ── enrichMatchEvents tarafından doldurulur ──
         lineups: {
             home: { startXI: [], substitutes: [] },
@@ -435,7 +436,7 @@ async function enrichMatchEvents(matches) {
         };
     };
 
-    const CONCURRENCY_LIMIT = 15;
+    const CONCURRENCY_LIMIT = 5;
     let fetchedCount = 0;
     let emptyCount   = 0;
     let failedCount  = 0;
