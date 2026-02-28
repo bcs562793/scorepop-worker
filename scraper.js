@@ -706,6 +706,7 @@ const formParts = html.split('Form Durumu');
 for (let fi = 1; fi <= 2; fi++) {
     if (!formParts[fi]) continue;
     const tableM = formParts[fi].match(/<table[^>]*>([\s\S]*?)<\/table>/);
+        log(`  🔍 fi=${fi} tableM=${tableM ? 'VAR' : 'YOK'} | ilk100: ${formParts[fi].slice(0,100).replace(/\s+/g,' ')}`);
     if (!tableM) continue;
     const formRows = [];
     const rowRe2   = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
