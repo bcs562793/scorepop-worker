@@ -581,38 +581,45 @@ async function collectMatches(targetDate) {
 // Yapı: archive_matches/{date}/fixtures/{matchId}
 // Her maç ayrı döküman → 1MB limit yok, backfill güvenle çalışır.
 async function saveToFirestore(db, dateStr, matches) {
-    const dateRef  = db.collection('archive_matches').doc(dateStr);
-    const BATCH_SZ = 400;
+    const dateRef = db.collection('archive_matches').doc(dateStr);
 
-    // Index dökümanı (hafif özet)
+    // Index dökümanı
     await dateRef.set({
         last_updated:  new Date().toISOString(),
         total_matches: matches.length,
         match_ids:     matches.map(m => m.fixture.id),
     }, { merge: true });
 
-    // Maçları batch halinde alt koleksiyona yaz
-    let batch   = db.batch();
-    let opCount = 0;
+    // ── Her maçı ayrı ayrı yaz (batch timeout sorununu çözer) ──
     let written = 0;
-
     for (const match of matches) {
         const ref = dateRef.collection('fixtures').doc(String(match.fixture.id));
-        batch.set(ref, match);
-        opCount++;
-        written++;
+        let attempt = 1;
+        while (attempt <= 3) {
+            try {
+                await ref.set(match);
+                written++;
+                break;
+            } catch (err) {
+                if (attempt < 3 && (err.code === 4 || err.message.includes('DEADLINE_EXCEEDED') || err.message.includes('UNAVAILABLE'))) {
+                    const delay = attempt * 3000;
+                    log(`  🔁 Firestore timeout matchId=${match.fixture.id}, ${delay}ms retry ${attempt}/3...`);
+                    await sleep(delay);
+                    attempt++;
+                } else {
+                    logErr(`  ❌ Firestore yazma hatası matchId=${match.fixture.id}: ${err.message}`);
+                    break;
+                }
+            }
+        }
 
-        if (opCount >= BATCH_SZ) {
-            await batch.commit();
-            log(`  💾 Batch commit: ${written}/${matches.length}`);
-            batch   = db.batch();
-            opCount = 0;
+        // Her 50 yazımda bir kısa mola
+        if (written % 50 === 0) {
+            log(`  💾 Yazıldı: ${written}/${matches.length}`);
+            await sleep(300);
         }
     }
 
-    if (opCount > 0) await batch.commit();
-
-    // Özet log
     const leagues       = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
     const withScore     = matches.filter(m => m.goals.home !== null).length;
     const withEvents    = matches.filter(m => m.events?.length > 0).length;
@@ -621,7 +628,7 @@ async function saveToFirestore(db, dateStr, matches) {
     const withStandings = matches.filter(m => m.standings?.length > 0).length;
     const totalEvents   = matches.reduce((s, m) => s + (m.events?.length || 0), 0);
 
-    log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}/fixtures/`);
+    log(`  ✅ ${written}/${matches.length} maç → archive_matches/${dateStr}/fixtures/`);
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0,6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length-6}` : ''}`);
     log(`  ⚽ Skoru olan: ${withScore}/${matches.length}`);
     log(`  🎯 Events: ${withEvents}/${matches.length} | Toplam: ${totalEvents}`);
