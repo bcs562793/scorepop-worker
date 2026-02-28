@@ -336,6 +336,7 @@ function parseMatch(m, targetDate) {
             penalty:   { home: null,      away: null      },
         },
         events:  [],
+        standings: [],
         // ── enrichMatchEvents tarafından doldurulur ──
         lineups: {
             home: { startXI: [], substitutes: [] },
