@@ -700,15 +700,16 @@ function parseH2HHtml(html) {
     }
 
     // ── 2. FORM ───────────────────────────────────────────────────────────────
-    const formDivRe = /Form Durumu[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
-let formDiv;
-let formIdx = 0;
-while ((formDiv = formDivRe.exec(html)) !== null && formIdx < 2) {
-    const sec      = formDiv[1];
+    // ── 2. FORM ───────────────────────────────────────────────────────────────
+const formParts = html.split('Form Durumu');
+for (let fi = 1; fi <= 2; fi++) {
+    if (!formParts[fi]) continue;
+    const tableM = formParts[fi].match(/<table[^>]*>([\s\S]*?)<\/table>/);
+    if (!tableM) continue;
     const formRows = [];
     const rowRe2   = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
     let frow;
-    while ((frow = rowRe2.exec(sec)) !== null) {
+    while ((frow = rowRe2.exec(tableM[1])) !== null) {
         const b      = frow[0];
         const imgM   = b.match(/img5\/(G|B|M)\.png/);
         if (!imgM) continue;
@@ -723,9 +724,8 @@ while ((formDiv = formDivRe.exec(html)) !== null && formIdx < 2) {
         });
         if (formRows.length >= 10) break;
     }
-    if (formIdx === 0) result.awayForm = formRows;
-    else               result.homeForm = formRows;
-    formIdx++;
+    if (fi === 1) result.awayForm = formRows;
+    else          result.homeForm = formRows;
 }
 
     // ── 3. EN GOLCÜLER ────────────────────────────────────────────────────────
