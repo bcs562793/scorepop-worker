@@ -215,9 +215,9 @@ function parseStandingsHtml(html) {
         const nameMatch = block.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
         const name = nameMatch ? nameMatch[1].trim() : '';
 
-        // Sayısal sütunlar: O G B M P
-        const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(\d+)<\/td>/g)]
-            .map(m => parseInt(m[1], 10));
+        // Sayısal sütunlar: O G B M P  (P <b> ile sarılı olabilir)
+        const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(\d+)(?:<\/b>)?<\/td>/g)]
+        .map(m => parseInt(m[1], 10));
 
         if (nums.length < 5) continue;
 
