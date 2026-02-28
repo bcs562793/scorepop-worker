@@ -777,13 +777,18 @@ function parseH2HHtml(html) {
 async function saveToFirestore(db, dateStr, matches) {
     const dateRef = db.collection('archive_matches').doc(dateStr);
 
+    // ── Ana document'a yaz (maclarByDate için 1 okuma = hızlı) ──
     await dateRef.set({
         last_updated:  new Date().toISOString(),
         total_matches: matches.length,
         match_ids:     matches.map(m => m.fixture.id),
-        fixtures:      matches,  // ← tek seferde hepsi
-    }, { merge: true });
+        fixtures:      matches,
+    });
 
+    const sizeKB = (JSON.stringify(matches).length / 1024).toFixed(1);
+    log(`  📦 Document boyutu: ${sizeKB} KB`);
+
+    // ── Subcollection'a yaz (arsivMacDetay tekil okuma için) ──
     let written = 0;
     for (const match of matches) {
         const ref = dateRef.collection('fixtures').doc(String(match.fixture.id));
@@ -820,8 +825,7 @@ async function saveToFirestore(db, dateStr, matches) {
     const totalEvents   = matches.reduce((s, m) => s + (m.events?.length || 0), 0);
     const withH2H       = matches.filter(m => m.h2h?.h2h?.length > 0).length;
 
-
-    log(`\n  ✅ ${written}/${matches.length} maç → archive_matches/${dateStr}/fixtures/`);
+    log(`\n  ✅ ${written}/${matches.length} maç → archive_matches/${dateStr}`);
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0, 6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length - 6}` : ''}`);
     log(`  ⚽ Skoru olan:   ${withScore}/${matches.length}`);
     log(`  🎯 Events:       ${withEvents}/${matches.length} (toplam ${totalEvents})`);
@@ -829,7 +833,6 @@ async function saveToFirestore(db, dateStr, matches) {
     log(`  📊 Stats:        ${withStats}/${matches.length}`);
     log(`  🏆 Standings:    ${withStandings}/${matches.length}`);
     log(`  🔄 H2H:          ${withH2H}/${matches.length}`);
-
 }
 
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
