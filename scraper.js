@@ -144,47 +144,81 @@ function fetchMatchStandings(matchId) {
                 'Referer':    `https://arsiv.mackolik.com/Mac/${matchId}/`,
             }
         };
-        https.get(url, options, res => {
-            let raw = '';
-            res.on('data', chunk => raw += chunk);
-            res.on('end', () => {
-                try {
-                    const result = parseStandingsHtml(raw);
-                    // ── Boş gelirse ham HTML'in ilk 200 karakterini logla ──
-                    if (result.length === 0 && raw.trim().length > 0) {
-                        log(`  ⚠️  Standings boş matchId=${matchId} | ham: ${raw.slice(0, 150).replace(/\s+/g, ' ')}`);
+
+        const MAX_RETRY   = 3;
+        const RETRY_DELAY = [1000, 2500, 5000];
+
+        const attempt = (tryNum) => {
+            https.get(url, options, res => {
+                let raw = '';
+                res.on('data', chunk => raw += chunk);
+                res.on('end', () => {
+                    // ── 502 retry ──
+                    if (raw.includes('502 Bad Gateway') || raw.includes('503 Service')) {
+                        if (tryNum < MAX_RETRY) {
+                            const delay = RETRY_DELAY[tryNum - 1] || 5000;
+                            log(`  🔁 Standings 502 matchId=${matchId}, ${delay}ms retry ${tryNum}/${MAX_RETRY}...`);
+                            setTimeout(() => attempt(tryNum + 1), delay);
+                            return;
+                        }
+                        logErr(`  ❌ Standings 502 matchId=${matchId} (deneme ${tryNum})`);
+                        resolve([]);
+                        return;
                     }
-                    resolve(result);
-                } catch(e) {
-                    logErr(`  ❌ Standings parse hatası matchId=${matchId}: ${e.message}`);
+
+                    try {
+                        const result = parseStandingsHtml(raw);
+                        if (result.length === 0 && raw.trim().length > 0 && !raw.includes('502')) {
+                            log(`  ⚠️  Standings boş matchId=${matchId} | ham: ${raw.slice(0, 150).replace(/\s+/g, ' ')}`);
+                        }
+                        resolve(result);
+                    } catch(e) {
+                        logErr(`  ❌ Standings parse hatası matchId=${matchId}: ${e.message}`);
+                        resolve([]);
+                    }
+                });
+            }).on('error', err => {
+                if (tryNum < MAX_RETRY) {
+                    const delay = RETRY_DELAY[tryNum - 1] || 5000;
+                    setTimeout(() => attempt(tryNum + 1), delay);
+                } else {
                     resolve([]);
                 }
             });
-        }).on('error', () => resolve([]));
+        };
+
+        attempt(1);
     });
 }
 
 function parseStandingsHtml(html) {
     const standings = [];
 
-    // Her satır: <tr class="row alt1|alt2" data-teamid="X">
-    const rowRegex = /<tr class="row alt[12]"[^>]*data-teamid="(\d+)"[^>]*>[\s\S]*?<\/tr>/g;
+    // data-teamid her yerde olabilir, sıra önemli değil
+    const rowRegex = /<tr[^>]+class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
     let row;
 
     while ((row = rowRegex.exec(html)) !== null) {
         const block = row[0];
-        const teamId = parseInt(row[1], 10);
+
+        // teamId — iki olası konum
+        const teamIdMatch = block.match(/data-teamid="(\d+)"/);
+        if (!teamIdMatch) continue;
+        const teamId = parseInt(teamIdMatch[1], 10);
 
         // Sıra
-        const rankMatch  = block.match(/<td[^>]*><b>(\d+)<\/b><\/td>/);
-        const rank = rankMatch ? parseInt(rankMatch[1], 10) : 0;
+        const rankMatch = block.match(/<td[^>]*>\s*<b>(\d+)<\/b>\s*<\/td>/);
+        if (!rankMatch) continue;
+        const rank = parseInt(rankMatch[1], 10);
 
-        // Takım adı
-        const nameMatch  = block.match(/target="_blank"[^>]*>\s*([\s\S]*?)\s*<\/a>/);
-        const name = nameMatch ? nameMatch[1].replace(/\s+/g, ' ').trim() : '';
+        // Takım adı — href içindeki text
+        const nameMatch = block.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
+        const name = nameMatch ? nameMatch[1].trim() : '';
 
         // Sayısal sütunlar: O G B M P
-        const nums = [...block.matchAll(/<td align="right">(\d+)<\/td>/g)].map(m => parseInt(m[1], 10));
+        const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(\d+)<\/td>/g)]
+            .map(m => parseInt(m[1], 10));
+
         if (nums.length < 5) continue;
 
         const [played, win, draw, lose, points] = nums;
@@ -196,16 +230,9 @@ function parseStandingsHtml(html) {
                 name: name,
                 logo: `https://im.mackolik.com/img/logo/buyuk/${teamId}.gif`,
             },
-            played,
-            win,
-            draw,
-            lose,
-            points,
-            gf:          0, // Mackolik standings'de yok
-            ga:          0,
-            gd:          0,
-            form:        '',
-            description: '',
+            played, win, draw, lose, points,
+            gf: 0, ga: 0, gd: 0,
+            form: '', description: '',
         });
     }
 
@@ -585,17 +612,21 @@ async function saveToFirestore(db, dateStr, matches) {
     if (opCount > 0) await batch.commit();
 
     // Özet log
-    const leagues     = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
-    const withScore   = matches.filter(m => m.goals.home !== null).length;
-    const withEvents  = matches.filter(m => m.events?.length > 0).length;
-    const withLineups = matches.filter(m => m.lineups?.home?.startXI?.length > 0).length;
-    const totalEvents = matches.reduce((s, m) => s + (m.events?.length || 0), 0);
+    // Özet log
+    const leagues       = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
+    const withScore     = matches.filter(m => m.goals.home !== null).length;
+    const withEvents    = matches.filter(m => m.events?.length > 0).length;
+    const withLineups   = matches.filter(m => m.lineups?.home?.startXI?.length > 0).length;
+    const withStats     = matches.filter(m => m.stats?.length > 0).length;
+    const withStandings = matches.filter(m => m.standings?.length > 0).length;
+    const totalEvents   = matches.reduce((s, m) => s + (m.events?.length || 0), 0);
 
     log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}/fixtures/`);
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0,6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length-6}` : ''}`);
     log(`  ⚽ Skoru olan: ${withScore}/${matches.length}`);
     log(`  🎯 Events: ${withEvents}/${matches.length} | Toplam: ${totalEvents}`);
     log(`  👕 Lineup: ${withLineups}/${matches.length}`);
+    log(`  📊 Stats: ${withStats}/${matches.length}`);
     log(`  🏆 Standings: ${withStandings}/${matches.length}`);
 }
 
