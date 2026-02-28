@@ -409,8 +409,8 @@ function parseMatch(m, targetDate) {
     };
 
     // ── GOLLER: m[31] / m[32], fallback m[7] ──
-    let homeGoals = toInt(m[31]);
-    let awayGoals = toInt(m[32]);
+    let homeGoals = toInt(m[12]);
+    let awayGoals = toInt(m[13]);
     if (homeGoals === null || awayGoals === null) {
         const s = typeof m[7] === 'string' ? m[7].trim() : '';
         if (s.includes('-')) {
@@ -421,8 +421,8 @@ function parseMatch(m, targetDate) {
     }
 
     // ── IY: m[29] / m[30] ──
-    const htHome = toInt(m[29]);
-    const htAway = toInt(m[30]);
+    const htHome = toInt(m[0]);
+    const htAway = toInt(m[1]);
 
     // ── İsabetli şut: m[12] / m[13] ──
     const homeShotsOT = typeof m[12] === 'number' ? m[12] : null;
