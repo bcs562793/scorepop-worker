@@ -700,30 +700,39 @@ function parseH2HHtml(html) {
     }
 
     // ── 2. FORM ───────────────────────────────────────────────────────────────
-    const formParts = html.split('Form Durumu');
-    for (let fi = 1; fi <= 2; fi++) {
-        if (!formParts[fi]) continue;
-        const formRows = [];
-        const rowRe2 = new RegExp('<tr[^>]*class="row alt[12]"[^>]*>([\\s\\S]*?)<\\/tr>', 'g');
-        let frow;
-        while ((frow = rowRe2.exec(formParts[fi])) !== null) {
-            const b      = frow[0];
+    // ── 2. FORM (GÜNCELLENMİŞ, STABİL YÖNTEM) ────────────────────────────────
+    // Başlıklara (split) güvenmek yerine, içinde form ikonları (G, B, M) barındıran 
+    // tabloları HTML'den doğrudan çekiyoruz. İlk tablo Ev Sahibi, ikincisi Deplasman.
+    const allTables = [...html.matchAll(/<table[^>]*class="md-table3"[^>]*>([\s\S]*?)<\/table>/g)];
+    const formTables = allTables.filter(t => 
+        t[0].includes('img5/G.png') || t[0].includes('img5/B.png') || t[0].includes('img5/M.png')
+    );
+
+    const parseFormTable = (tableHtml) => {
+        const rows = [];
+        const rowRe = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
+        let m;
+        while ((m = rowRe.exec(tableHtml)) !== null) {
+            const b = m[0];
             const imgM   = b.match(/img5\/(G|B|M)\.png/);
-            if (!imgM) continue;
             const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
-            if (!scoreM) continue;
-            const dateM  = b.match(/<td>\s*(\d{2}\.\d{2})\s*<\/td>/);
-            formRows.push({
-                date:      dateM ? dateM[1] : '',
-                homeGoals: parseInt(scoreM[1], 10),
-                awayGoals: parseInt(scoreM[2], 10),
-                result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
-            });
-            if (formRows.length >= 10) break;
+            const dateM  = b.match(/<td[^>]*>\s*(\d{2}\.\d{2})\s*<\/td>/);
+            
+            if (imgM && scoreM) {
+                rows.push({
+                    date:      dateM ? dateM[1] : '',
+                    homeGoals: parseInt(scoreM[1], 10),
+                    awayGoals: parseInt(scoreM[2], 10),
+                    result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
+                });
+            }
+            if (rows.length >= 10) break;
         }
-        if (fi === 1) result.awayForm = formRows;
-        else          result.homeForm = formRows;
-    }
+        return rows;
+    };
+
+    if (formTables.length > 0) result.homeForm = parseFormTable(formTables[0][1]);
+    if (formTables.length > 1) result.awayForm = parse
 
     // ── 3. EN GOLCÜLER ────────────────────────────────────────────────────────
     const scorerDivRe = /En Golc[üu]ler[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
