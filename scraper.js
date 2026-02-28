@@ -706,11 +706,9 @@ const formParts = html.split('Form Durumu');
 for (let fi = 1; fi <= 2; fi++) {
     if (!formParts[fi]) continue;
     const tableM = formParts[fi].match(/<table[^>]*>([\s\S]*?)<\/table>/);
-    log(`  🔍 fi=${fi} tableM=${tableM ? 'VAR' : 'YOK'} | tablo ilk150: ${tableM ? tableM[1].slice(0,150).replace(/\s+/g,' ') : '-'}`);
-    log(`  🔍 fi=${fi} row alt var mı: ${tableM[1].includes('row alt')}`);
     if (!tableM) continue;
     const formRows = [];
-    const rowRe2   = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
+    const rowRe2 = new RegExp('<tr[^>]*class="row alt[12]"[^>]*>([\\s\\S]*?)<\\/tr>', 'g'); // ← new RegExp
     let frow;
     while ((frow = rowRe2.exec(tableM[1])) !== null) {
         const b      = frow[0];
