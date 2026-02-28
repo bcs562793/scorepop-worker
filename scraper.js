@@ -708,7 +708,7 @@ function parseH2HHtml(html) {
         }
     }
 
-    // ── 2. FORM (KUSURSUZ DİREKT EŞLEŞTİRME) ─────────────────────────────────
+    // ── 2. FORM (KUSURSUZ DİREKT EŞLEŞTİRME VE TAKIM İSİMLERİ) ───────────────
     // Sadece Form Durumu başlığının hemen altındaki tabloları hedefler
     const formTables = [];
     const formRe = /Form Durumu\s*<\/div>\s*<table[^>]*>([\s\S]*?)<\/table>/g;
@@ -722,19 +722,39 @@ function parseH2HHtml(html) {
         const rowRe = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
         let m;
         while ((m = rowRe.exec(tableHtml)) !== null) {
-            const b = m[1];
-            const imgM   = b.match(/img5\/(G|B|M)\.png/);
-            const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)/);
-            const dateM  = b.match(/<td[^>]*>\s*(\d{2}\.\d{2})\s*<\/td>/);
+            // Sütunları (td) parçalara ayırıyoruz. Böylece kapanmayan </td> etiketleri sorun olmuyor!
+            const parts = m[1].split(/<td[^>]*>/i);
             
-            if (imgM && scoreM) {
-                rows.push({
-                    date:      dateM ? dateM[1] : '',
-                    homeGoals: parseInt(scoreM[1], 10),
-                    awayGoals: parseInt(scoreM[2], 10),
-                    result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
-                });
-            }
+            // Eğer sütun sayısı eksikse (bozuk HTML) atla
+            if (parts.length < 7) continue;
+
+            // 2. Parça: Tarih (Etiketsiz, sadece rakamları alıyoruz)
+            let dateStr = parts[2].replace(/<[^>]+>/g, '').trim();
+            const dMatch = dateStr.match(/\d{2}\.\d{2}/);
+            dateStr = dMatch ? dMatch[0] : '';
+
+            // 3. Parça: Ev Sahibi Takım
+            const homeTeam = parts[3].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim();
+
+            // 4. Parça: Skor
+            const scoreM = parts[4].match(/<b>\s*(\d+)\s*-\s*(\d+)/);
+            if (!scoreM) continue; // Oynanmamış (v) maçları atla
+
+            // 5. Parça: Deplasman Takımı
+            const awayTeam = parts[5].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim();
+
+            // 6. Parça: Maç Sonucu (G/B/M)
+            const imgM = parts[6].match(/img5\/(G|B|M)\.png/);
+            const resultVal = imgM ? (imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L') : '';
+
+            rows.push({
+                date:      dateStr,
+                homeTeam:  homeTeam, // Eklendi!
+                awayTeam:  awayTeam, // Eklendi!
+                homeGoals: parseInt(scoreM[1], 10),
+                awayGoals: parseInt(scoreM[2], 10),
+                result:    resultVal,
+            });
             if (rows.length >= 10) break;
         }
         return rows;
