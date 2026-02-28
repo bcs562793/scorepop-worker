@@ -705,7 +705,7 @@ const formParts = html.split('Form Durumu');
     log(`  🔍 formParts uzunluk: ${formParts.length}`);  // ← buraya
 for (let fi = 1; fi <= 2; fi++) {
     if (!formParts[fi]) continue;
-    const tableM = formParts[fi].match(/<table[^>]*>([\s\S]*?)<\/table>/);
+    const tableM = formParts[fi].match(/<tbody>([\s\S]*?)<\/tbody>/);
     if (!tableM) continue;
     log(`  🔍 fi=${fi} img5 var mı: ${tableM[1].includes('img5')}`);
     log(`  🔍 fi=${fi} tablo içerik: ${tableM[1].slice(0, 300).replace(/\s+/g, ' ')}`);
