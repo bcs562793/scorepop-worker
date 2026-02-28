@@ -777,7 +777,15 @@ function parseH2HHtml(html) {
 async function saveToFirestore(db, dateStr, matches) {
     const dateRef = db.collection('archive_matches').doc(dateStr);
 
-    // ── Ana document'a yaz (retry ile) ──
+    // ── Ana document'a SADECE özet yaz (hızlı liste için) ──
+    const summaries = matches.map(m => ({
+        fixture: m.fixture,
+        league:  m.league,
+        teams:   m.teams,
+        goals:   m.goals,
+        score:   m.score,
+    }));
+
     let mainAttempt = 1;
     while (mainAttempt <= 3) {
         try {
@@ -786,13 +794,10 @@ async function saveToFirestore(db, dateStr, matches) {
                 last_updated:  new Date().toISOString(),
                 total_matches: matches.length,
                 match_ids:     matches.map(m => m.fixture.id),
-                fixtures:      matches,
+                fixtures:      summaries,  // ← events/stats/h2h olmadan
             });
             const elapsed = Date.now() - start;
-            if (elapsed > 500) {
-                log(`  ⏳ Ana doc yavaş: ${elapsed}ms`);
-                await sleep(300);
-            }
+            if (elapsed > 500) await sleep(300);
             break;
         } catch (err) {
             if (mainAttempt < 3 && (err.code === 4 || err.message.includes('DEADLINE_EXCEEDED') || err.message.includes('UNAVAILABLE'))) {
@@ -807,10 +812,10 @@ async function saveToFirestore(db, dateStr, matches) {
         }
     }
 
-    const sizeKB = (JSON.stringify(matches).length / 1024).toFixed(1);
-    log(`  📦 Document boyutu: ${sizeKB} KB`);
+    const sizeKB = (JSON.stringify(summaries).length / 1024).toFixed(1);
+    log(`  📦 Özet document boyutu: ${sizeKB} KB`);
 
-    // ── Subcollection'a yaz (50'şer 50'şer) ──
+    // ── Subcollection'a TAM veriyi yaz (arsivMacDetay için) ──
     let written = 0;
     for (const match of matches) {
         const ref = dateRef.collection('fixtures').doc(String(match.fixture.id));
