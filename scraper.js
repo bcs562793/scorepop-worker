@@ -644,9 +644,6 @@ async function fetchMatchH2H(matchId) {
     const url = `https://arsiv.mackolik.com/Match/Head2Head.aspx?id=${matchId}&s=1`;
     try {
         const raw = await httpGet(url, { 'Referer': `https://arsiv.mackolik.com/Mac/${matchId}/` });
-        
-        // DEBUG
-        log(`  🔍 H2H ham uzunluk=${raw.length} | ilk200: ${raw.slice(0, 200).replace(/\s+/g, ' ')}`);
         // SUNUCU BİZİ HATA SAYFASINA ATTIYSA İŞLEMİ DURDUR
         if (raw.includes('Object moved') || raw.includes('PageError.htm')) {
             log(`  ⚠️ H2H sayfası bulunamadı veya Maçkolik engelledi (Redirect). matchId=${matchId}`);
@@ -655,10 +652,7 @@ async function fetchMatchH2H(matchId) {
         
         const result = parseH2HHtml(raw);
         log(`  🔍 H2H parse: h2h=${result.h2h.length} form=${result.homeForm.length}/${result.awayForm.length}`);
-        log(`  🔍 md-table3 var mı: ${raw.includes('md-table3')}`);
-log(`  🔍 row alt1 var mı: ${raw.includes('row alt1')}`);
-log(`  🔍 Form Durumu var mı: ${raw.includes('Form Durumu')}`);
-log(`  🔍 En Golcü var mı: ${raw.includes('En Golc')}`);
+        
         return result;
     } catch (e) {
         logErr(`  ❌ H2H matchId=${matchId}: ${e.message}`);
