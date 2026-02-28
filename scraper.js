@@ -216,6 +216,7 @@ function parseMatch(m, targetDate) {
 }
 
 // ─── MAÇ DETAYLARINI (EVENTS) MACKOLİK API'DEN ÇEK ──────────────────────────
+// ─── MAÇ DETAYLARINI (EVENTS) MACKOLİK API'DEN ÇEK ──────────────────────────
 function fetchMatchDetails(matchId) {
     return new Promise((resolve) => {
         const url = `https://arsiv.mackolik.com/Match/MatchData.aspx?t=dtl&id=${matchId}&s=0`;
@@ -230,17 +231,32 @@ function fetchMatchDetails(matchId) {
             let raw = '';
             res.on('data', chunk => raw += chunk);
             res.on('end', () => {
+                // ── DÜZELTME: Önce direkt parse, başarısız olursa temizleyerek tekrar dene ──
+                let parsed = null;
                 try {
-                    const parsed = JSON.parse(raw);
-                    // ── DÜZELTME 1: Boş/eksik events loglanıyor ──
-                    if (!parsed?.e || !Array.isArray(parsed.e) || parsed.e.length === 0) {
-                        log(`  ⚠️  Events boş: matchId=${matchId} | ham: ${raw.slice(0, 120)}`);
+                    parsed = JSON.parse(raw);
+                } catch (e1) {
+                    try {
+                        // Bozuk escape karakterlerini temizle: \ ardından geçersiz karakter varsa sil
+                        const cleaned = raw
+                            .replace(/\\(?!["\\/bfnrtu])/g, '\\\\')  // geçersiz escape → kaçır
+                            .replace(/[\x00-\x1F\x7F]/g, ' ');       // kontrol karakterlerini boşluğa çevir
+                        parsed = JSON.parse(cleaned);
+                        log(`  🔧 JSON onarıldı: matchId=${matchId}`);
+                    } catch (e2) {
+                        logErr(`  ❌ JSON parse hatası matchId=${matchId}: ${e2.message} | ham: ${raw.slice(0, 120)}`);
+                        resolve(null);
+                        return;
                     }
-                    resolve(parsed);
-                } catch(e) {
-                    logErr(`  ❌ JSON parse hatası matchId=${matchId}: ${e.message} | ham: ${raw.slice(0, 120)}`);
-                    resolve(null);
                 }
+
+                if (!parsed?.e || !Array.isArray(parsed.e) || parsed.e.length === 0) {
+                    // Küçük lig / veri yok — bu normal, sadece debug seviyesinde logla
+                    // log(`  ⚠️  Events boş: matchId=${matchId}`);
+                } else {
+                    // Sadece dolu olanları say, gürültüyü azalt
+                }
+                resolve(parsed);
             });
         }).on('error', err => {
             logErr(`  ❌ HTTP hatası matchId=${matchId}: ${err.message}`);
