@@ -107,6 +107,76 @@ function parseStatus(statusCode, statusText) {
     return { ...(map[statusCode] || { long: statusText || 'Unknown', short: 'UN', elapsed: null }), extra: null };
 }
 
+// ─── İSTATİSTİKLERİ ÇEK (HTML parse) ────────────────────────────────────────
+function fetchMatchStats(matchId) {
+    return new Promise((resolve) => {
+        const url = `https://arsiv.mackolik.com/AjaxHandlers/MatchHandler.aspx?command=optaStats&id=${matchId}`;
+        const options = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Accept':     'text/html',
+                'Referer':    `https://arsiv.mackolik.com/Mac/${matchId}/`,
+            }
+        };
+        https.get(url, options, res => {
+            let raw = '';
+            res.on('data', chunk => raw += chunk);
+            res.on('end', () => {
+                try {
+                    resolve(parseStatsHtml(raw));
+                } catch(e) {
+                    logErr(`  ❌ Stats parse hatası matchId=${matchId}: ${e.message}`);
+                    resolve([]);
+                }
+            });
+        }).on('error', () => resolve([]));
+    });
+}
+
+function parseStatsHtml(html) {
+    const stats = [];
+
+    // İsim → İngilizce karşılığı (Flutter tarafıyla uyumlu)
+    const nameMap = {
+        'Topla Oynama':   'Ball Possession',
+        'Toplam Şut':     'Total Shots',
+        'İsabetli Şut':   'Shots on Goal',
+        'Başarılı Paslar':'Passes',
+        'Pas Başarı(%)':  'Passes %',
+        'Korner':         'Corner Kicks',
+        'Orta':           'Crosses',
+        'Faul':           'Fouls',
+        'Ofsayt':         'Offsides',
+    };
+
+    // Her satırı bul: team-1-text | title | team-2-text
+    const rowRegex = /team-1-statistics-text">(.*?)<\/div>.*?statistics-title-text">(.*?)<\/div>.*?team-2-statistics-text">(.*?)<\/div>/gs;
+    let match;
+
+    while ((match = rowRegex.exec(html)) !== null) {
+        const homeRaw = match[1].trim().replace('%', '');
+        const titleTR = match[2].trim();
+        const awayRaw = match[3].trim().replace('%', '');
+
+        const title = nameMap[titleTR] || titleTR;
+
+        // Sayısal değere çevir (4/13 gibi oran varsa string bırak)
+        const parseVal = v => {
+            if (v.includes('/')) return v; // "4/13" gibi oran → string
+            const n = parseFloat(v);
+            return isNaN(n) ? v : n;
+        };
+
+        stats.push({
+            type:    title,
+            homeVal: parseVal(homeRaw),
+            awayVal: parseVal(awayRaw),
+        });
+    }
+
+    return stats;
+}
+
 // ─── TEK MAÇ PARSE ────────────────────────────────────────────────────────────
 function parseMatch(m, targetDate) {
     if (!Array.isArray(m) || m.length < 37) return null;
