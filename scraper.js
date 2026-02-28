@@ -460,6 +460,9 @@ async function enrichMatchEvents(matches) {
             // ── Stats (ayrı endpoint) ──
             match.stats = await fetchMatchStats(matchId);
 
+            // ── Standings ──
+            match.standings = await fetchMatchStandings(matchId);
+
             // ── Events ──
             if (!details.e || !Array.isArray(details.e) || details.e.length === 0) {
                 emptyCount++;
