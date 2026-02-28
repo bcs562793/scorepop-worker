@@ -818,12 +818,17 @@ async function saveToFirestore(db, dateStr, matches) {
 async function processDate(db, targetDate) {
     const dateStr = formatDate(targetDate);
     log(`\n📆 İşleniyor: ${dateStr}`);
-    let matches = await collectMatches(targetDate);
-    if (matches.length > 0) {
-        matches = await enrichMatchEvents(matches);
-        await saveToFirestore(db, dateStr, matches);
-    } else {
-        log(`  ❌ Kayıt yok: ${dateStr}`);
+    try {
+        let matches = await collectMatches(targetDate);
+        if (matches.length > 0) {
+            matches = await enrichMatchEvents(matches);
+            await saveToFirestore(db, dateStr, matches);
+        } else {
+            log(`  ❌ Kayıt yok: ${dateStr}`);
+        }
+    } catch (e) {
+        logErr(`  ⚠️  ${dateStr} atlandı: ${e.message}`);
+        // crash etme, devam et
     }
 }
 
