@@ -142,7 +142,7 @@ function parseStatus(statusCode, statusText) {
   [36] [countryId, countryName, leagueId, leagueName, tournId, season, "", aeleme, ?, leagueCode, ?, sportType]
   [37] hasOdds
 */
-// ─── TEK MAÇ PARSE (TAKIM ID'LERİ FLASHSCORE GİBİ 0'A SABİTLENDİ) ─────────────
+// ─── TEK MAÇ PARSE (EKSTRA BÜTÜN VERİLER SİLİNDİ, %100 FLASHSCORE KLONU) ──────
 function parseMatch(m, targetDate) {
     if (!Array.isArray(m) || m.length < 37) return null;
 
@@ -151,8 +151,8 @@ function parseMatch(m, targetDate) {
     if (sportTypeId !== 1) return null;
 
     const matchId    = parseInt(m[0], 10) || 0;
-    const homeId     = parseInt(m[1], 10) || 0; // Logo için gerçek ID'yi saklıyoruz
-    const awayId     = parseInt(m[3], 10) || 0; // Logo için gerçek ID'yi saklıyoruz
+    const homeId     = parseInt(m[1], 10) || 0; 
+    const awayId     = parseInt(m[3], 10) || 0; 
     const countryId  = parseInt(li[0], 10) || 0; 
     const leagueId   = parseInt(li[2], 10) || 0;
     const seasonYear = parseInt(targetDate.getFullYear(), 10);
@@ -175,9 +175,6 @@ function parseMatch(m, targetDate) {
         htAway = toInt(parts[1]);
     }
 
-    const rcHome = toInt(m[8]) || 0;
-    const rcAway = toInt(m[9]) || 0;
-
     const statusCode = parseInt(m[5], 10) || 0;
     const statusText = typeof m[6] === 'string'  ? m[6] : '';
     const status     = parseStatus(statusCode, statusText);
@@ -194,11 +191,11 @@ function parseMatch(m, targetDate) {
     const awayWin = homeGoals !== null && awayGoals !== null
         ? (awayGoals > homeGoals ? true : homeGoals === awayGoals ? null : false) : null;
 
-    // Logoları arka planda gerçek ID'lerle buluyoruz
     const homeLogoUrl   = homeId > 0 ? `https://im.mackolik.com/img/logo/buyuk/${homeId}.gif` : null;
     const awayLogoUrl   = awayId > 0 ? `https://im.mackolik.com/img/logo/buyuk/${awayId}.gif` : null;
     const leagueLogoUrl = countryId > 0 ? `https://im.mackolik.com/img/groups/${countryId}.gif` : null;
 
+    // 🔥 DİKKAT: FAZLALIK OLAN stats, odds, lineups, red_cards TAMAMEN SİLİNDİ 🔥
     return {
         fixture: {
             id:        matchId,
@@ -223,18 +220,16 @@ function parseMatch(m, targetDate) {
         },
         teams: {
             home: {
-                id:     0,             // 🔥 FLUTTER İÇİN FLASHSCORE GİBİ "0" YAPILDI 🔥
+                id:     0,             // FLASHSCORE UYUMU
                 name:   m[2] || "Unknown",
                 logo:   homeLogoUrl,
-                winner: homeWin,
-                red_cards: rcHome
+                winner: homeWin
             },
             away: {
-                id:     0,             // 🔥 FLUTTER İÇİN FLASHSCORE GİBİ "0" YAPILDI 🔥
+                id:     0,             // FLASHSCORE UYUMU
                 name:   m[4] || "Unknown",
                 logo:   awayLogoUrl,
-                winner: awayWin,
-                red_cards: rcAway
+                winner: awayWin
             }
         },
         goals: {
@@ -249,6 +244,76 @@ function parseMatch(m, targetDate) {
         },
         events: [] 
     };
+}
+
+// ─── MAÇ DETAYLARI (EVENTS) KESİN TİP DÖNÜŞÜMÜ İLE ─────────────────────────
+async function enrichMatchEvents(matches) {
+    log(`\n🔍 Maç detayları (Events) çekiliyor... Toplam: ${matches.length} maç`);
+    
+    const CONCURRENCY_LIMIT = 15; 
+
+    for (let i = 0; i < matches.length; i += CONCURRENCY_LIMIT) {
+        const chunk = matches.slice(i, i + CONCURRENCY_LIMIT);
+        
+        await Promise.all(chunk.map(async (match) => {
+            const matchId = match.fixture.id;
+
+            if (['NS', 'PST', 'CANC'].includes(match.fixture.status.short)) {
+                return;
+            }
+
+            const details = await fetchMatchDetails(matchId);
+            
+            if (details && details.e && Array.isArray(details.e)) {
+                match.events = details.e.map(ev => {
+                    const teamCode   = ev[0]; 
+                    const minute     = ev[1]; 
+                    const playerName = ev[3];
+                    const typeCode   = ev[4];
+                    const extra      = ev[5] || {};
+
+                    const teamSide = teamCode === 1 ? 'home' : 'away';
+                    const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
+
+                    let typeStr    = 'Other';
+                    let detailStr  = '';
+                    let assistName = null;
+
+                    if (typeCode === 1) {
+                        typeStr = 'Goal';
+                        detailStr = 'Normal Goal';
+                        if (extra.astName) assistName = `(${extra.astName})`;
+                    } else if (typeCode === 2 || typeCode === 3 || typeCode === 6) {
+                        typeStr = 'Other';
+                        detailStr = '';
+                        assistName = null;
+                    } else if (typeCode === 4) {
+                        typeStr = 'subst';
+                        detailStr = 'Substitution';
+                        assistName = null; // Flashscore'da çıkan oyuncu assistName'e yazılmaz null kalır.
+                    }
+
+                    // 🔥 BÜTÜN TİPLER (INT/STRING) ZORLA KORUMA ALTINA ALINDI 🔥
+                    return {
+                        minute: Number(minute) || 0,
+                        minuteExtra: null,
+                        type: String(typeStr),
+                        detail: String(detailStr),
+                        playerName: playerName ? String(playerName) : "",
+                        assistName: assistName ? String(assistName) : null,
+                        teamSide: String(teamSide),
+                        teamId: 0, // FLASHSCORE UYUMU
+                        teamName: String(teamName)
+                    };
+                });
+            }
+        }));
+        
+        await sleep(500); 
+    }
+    
+    log(`  ✅ Events başarıyla saniyeler içinde maçlara eklendi.`);
+    return matches;
 }
 
 // ─── MAÇLARI ÇEK & PARSE ET ───────────────────────────────────────────────────
@@ -310,78 +375,7 @@ function fetchMatchDetails(matchId) {
     });
 }
 
-// 🔥 EVENT TEAM ID'LERİ DE FLASHSCORE GİBİ 0'A SABİTLENDİ 🔥
-async function enrichMatchEvents(matches) {
-    log(`\n🔍 Maç detayları (Events) çekiliyor... Toplam: ${matches.length} maç`);
-    
-    const CONCURRENCY_LIMIT = 15; 
-    let sampleLogged = false;
 
-    for (let i = 0; i < matches.length; i += CONCURRENCY_LIMIT) {
-        const chunk = matches.slice(i, i + CONCURRENCY_LIMIT);
-        
-        await Promise.all(chunk.map(async (match) => {
-            const matchId = match.fixture.id;
-
-            if (['NS', 'PST', 'CANC'].includes(match.fixture.status.short)) {
-                return;
-            }
-
-            const details = await fetchMatchDetails(matchId);
-            
-            if (details && details.e && Array.isArray(details.e)) {
-                match.events = details.e.map(ev => {
-                    const teamCode   = ev[0]; 
-                    const minute     = parseInt(ev[1], 10) || 0; 
-                    const playerName = ev[3] || '';
-                    const typeCode   = ev[4];
-                    const extra      = ev[5] || {};
-
-                    const teamSide = teamCode === 1 ? 'home' : 'away';
-                    const teamName = teamCode === 1 ? (match.teams.home.name || 'Unknown') : (match.teams.away.name || 'Unknown');
-                    
-                    // 🔥 SENİN MÜTHİŞ TESPİTİN: BURASI DA "0" OLMAK ZORUNDA! 🔥
-                    const teamId   = 0; 
-
-                    let typeStr    = 'Other';
-                    let detailStr  = '';
-                    let assistName = null;
-
-                    if (typeCode === 1) {
-                        typeStr = 'Goal';
-                        detailStr = 'Normal Goal';
-                        if (extra.astName) assistName = `(${extra.astName})`;
-                    } else if (typeCode === 2 || typeCode === 3 || typeCode === 6) {
-                        typeStr = 'Other';
-                        detailStr = '';
-                        assistName = null;
-                    } else if (typeCode === 4) {
-                        typeStr = 'subst';
-                        detailStr = 'Substitution';
-                        assistName = null; 
-                    }
-
-                    return {
-                        minute: Number(minute),
-                        minuteExtra: null,
-                        type: String(typeStr),
-                        detail: String(detailStr),
-                        playerName: String(playerName),
-                        assistName: assistName ? String(assistName) : null,
-                        teamSide: String(teamSide),
-                        teamId: Number(teamId), // Artık her halükarda "0" gidecek!
-                        teamName: String(teamName)
-                    };
-                });
-            }
-        }));
-        
-        await sleep(500); 
-    }
-    
-    log(`  ✅ Events başarıyla saniyeler içinde maçlara eklendi.`);
-    return matches;
-}
 
 
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
