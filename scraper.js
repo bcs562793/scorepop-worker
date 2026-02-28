@@ -216,7 +216,6 @@ function parseMatch(m, targetDate) {
 }
 
 // ─── MAÇ DETAYLARINI (EVENTS) MACKOLİK API'DEN ÇEK ──────────────────────────
-// ─── MAÇ DETAYLARINI (EVENTS) MACKOLİK API'DEN ÇEK ──────────────────────────
 function fetchMatchDetails(matchId) {
     return new Promise((resolve) => {
         const url = `https://arsiv.mackolik.com/Match/MatchData.aspx?t=dtl&id=${matchId}&s=0`;
@@ -227,44 +226,65 @@ function fetchMatchDetails(matchId) {
                 'Referer':    `https://arsiv.mackolik.com/Mac/${matchId}/`
             }
         };
-        https.get(url, options, res => {
-            let raw = '';
-            res.on('data', chunk => raw += chunk);
-            res.on('end', () => {
-                // ── DÜZELTME: Önce direkt parse, başarısız olursa temizleyerek tekrar dene ──
-                let parsed = null;
-                try {
-                    parsed = JSON.parse(raw);
-                } catch (e1) {
-                    try {
-                        // Bozuk escape karakterlerini temizle: \ ardından geçersiz karakter varsa sil
-                        const cleaned = raw
-                            .replace(/\\(?!["\\/bfnrtu])/g, '\\\\')  // geçersiz escape → kaçır
-                            .replace(/[\x00-\x1F\x7F]/g, ' ');       // kontrol karakterlerini boşluğa çevir
-                        parsed = JSON.parse(cleaned);
-                        log(`  🔧 JSON onarıldı: matchId=${matchId}`);
-                    } catch (e2) {
-                        logErr(`  ❌ JSON parse hatası matchId=${matchId}: ${e2.message} | ham: ${raw.slice(0, 120)}`);
+
+        const MAX_RETRY = 3;
+        const RETRY_DELAY = [1000, 2500, 5000]; // her deneme arası bekleme (ms)
+
+        const attempt = (tryNum) => {
+            https.get(url, options, res => {
+                let raw = '';
+                res.on('data', chunk => raw += chunk);
+                res.on('end', () => {
+
+                    // ── 502 / HTML hata sayfası kontrolü ──
+                    if (raw.trimStart().startsWith('<')) {
+                        const isGatewayErr = res.statusCode >= 500 || raw.includes('Bad Gateway') || raw.includes('Service Unavailable');
+                        if (isGatewayErr && tryNum < MAX_RETRY) {
+                            const delay = RETRY_DELAY[tryNum - 1] || 5000;
+                            log(`  🔁 ${res.statusCode} hatası matchId=${matchId}, ${delay}ms sonra retry ${tryNum}/${MAX_RETRY}...`);
+                            setTimeout(() => attempt(tryNum + 1), delay);
+                            return;
+                        }
+                        logErr(`  ❌ Sunucu hatası matchId=${matchId} (deneme ${tryNum}): HTTP ${res.statusCode}`);
                         resolve(null);
                         return;
                     }
-                }
 
-                if (!parsed?.e || !Array.isArray(parsed.e) || parsed.e.length === 0) {
-                    // Küçük lig / veri yok — bu normal, sadece debug seviyesinde logla
-                    // log(`  ⚠️  Events boş: matchId=${matchId}`);
+                    // ── JSON parse: önce direkt, başarısız olursa temizleyerek ──
+                    let parsed = null;
+                    try {
+                        parsed = JSON.parse(raw);
+                    } catch (e1) {
+                        try {
+                            const cleaned = raw
+                                .replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
+                                .replace(/[\x00-\x1F\x7F]/g, ' ');
+                            parsed = JSON.parse(cleaned);
+                            log(`  🔧 JSON onarıldı: matchId=${matchId}`);
+                        } catch (e2) {
+                            logErr(`  ❌ JSON parse hatası matchId=${matchId}: ${e2.message} | ham: ${raw.slice(0, 120)}`);
+                            resolve(null);
+                            return;
+                        }
+                    }
+
+                    resolve(parsed);
+                });
+            }).on('error', err => {
+                if (tryNum < MAX_RETRY) {
+                    const delay = RETRY_DELAY[tryNum - 1] || 5000;
+                    log(`  🔁 Bağlantı hatası matchId=${matchId} (${err.message}), ${delay}ms sonra retry ${tryNum}/${MAX_RETRY}...`);
+                    setTimeout(() => attempt(tryNum + 1), delay);
                 } else {
-                    // Sadece dolu olanları say, gürültüyü azalt
+                    logErr(`  ❌ HTTP hatası matchId=${matchId}: ${err.message}`);
+                    resolve(null);
                 }
-                resolve(parsed);
             });
-        }).on('error', err => {
-            logErr(`  ❌ HTTP hatası matchId=${matchId}: ${err.message}`);
-            resolve(null);
-        });
+        };
+
+        attempt(1);
     });
 }
-
 // ─── MAÇ DETAYLARI (EVENTS) ENRİCH ──────────────────────────────────────────
 async function enrichMatchEvents(matches) {
     log(`\n🔍 Events çekiliyor... Toplam: ${matches.length} maç`);
