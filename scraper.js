@@ -1,6 +1,6 @@
 /**
  * ScorePop — Mackolik → Firebase Scraper
- * Flashscore bot ile aynı Firebase yapısını kullanır.
+ * v2: Alt koleksiyon yapısı (1MB limit yok), lineups desteği.
  *
  * Kullanım:
  *   node scraper.js --mode=daily
@@ -65,10 +65,8 @@ function parseTargetDate(s) {
     return d;
 }
 
-/** JS Date → 'YYYY-MM-DD' */
 const formatDate = d => d.toISOString().split('T')[0];
 
-/** JS Date → mackolik API formatı 'DD/MM/YYYY' */
 const toMacDate = d => {
     const [y, m, day] = formatDate(d).split('-');
     return `${day}/${m}/${y}`;
@@ -96,18 +94,15 @@ function fetchMackolik(dateStr) {
     });
 }
 
-// ─── SPOR TİPİ ────────────────────────────────────────────────────────────────
-const SPORT_TYPE = { 1: 'Football', 2: 'Basketball', 3: 'Other' };
-
-// Durum kodu → flashscore uyumlu status objesi
+// ─── STATUS PARSE ─────────────────────────────────────────────────────────────
 function parseStatus(statusCode, statusText) {
     const map = {
-        0:  { long: 'Not Started',     short: 'NS',  elapsed: null },
-        4:  { long: 'Match Finished',  short: 'FT',  elapsed: 90   },
-        8:  { long: 'Match Finished',  short: 'PEN', elapsed: 120  },
-        9:  { long: 'Postponed',       short: 'PST', elapsed: null },
-        20: { long: 'Extra Time',      short: 'ET',  elapsed: 105  },
-        13: { long: 'Match Finished',  short: 'FT',  elapsed: null },
+        0:  { long: 'Not Started',    short: 'NS',  elapsed: null },
+        4:  { long: 'Match Finished', short: 'FT',  elapsed: 90   },
+        8:  { long: 'Match Finished', short: 'PEN', elapsed: 120  },
+        9:  { long: 'Postponed',      short: 'PST', elapsed: null },
+        20: { long: 'Extra Time',     short: 'ET',  elapsed: 105  },
+        13: { long: 'Match Finished', short: 'FT',  elapsed: null },
     };
     return { ...(map[statusCode] || { long: statusText || 'Unknown', short: 'UN', elapsed: null }), extra: null };
 }
@@ -125,7 +120,7 @@ function parseMatch(m, targetDate) {
     const awayId     = parseInt(m[3], 10) || 0;
     const countryId  = parseInt(li[0], 10) || 0;
     const leagueId   = parseInt(li[2], 10) || 0;
-    const seasonYear = parseInt(targetDate.getFullYear(), 10);
+    const seasonYear = targetDate.getFullYear();
 
     const toInt = v => {
         if (v === null || v === undefined || v === '') return null;
@@ -133,11 +128,10 @@ function parseMatch(m, targetDate) {
         return isNaN(n) ? null : n;
     };
 
-    let homeGoals = toInt(m[12]);
-    let awayGoals = toInt(m[13]);
+    const homeGoals = toInt(m[12]);
+    const awayGoals = toInt(m[13]);
 
-    let htHome = null;
-    let htAway = null;
+    let htHome = null, htAway = null;
     const htStr = typeof m[7] === 'string' ? m[7].replace(/\s/g, '') : '';
     if (htStr.includes('-')) {
         const parts = htStr.split('-');
@@ -149,21 +143,21 @@ function parseMatch(m, targetDate) {
     const statusText = typeof m[6] === 'string' ? m[6] : '';
     const status     = parseStatus(statusCode, statusText);
 
-    const countryName = li[1]  ?? 'Unknown';
-    const leagueName  = li[3]  ?? 'Unknown';
-    const dateStr     = formatDate(targetDate);
-    const timeStr     = typeof m[16] === 'string' ? m[16] : '00:00';
-    const isoDate     = `${dateStr}T${timeStr}:00+03:00`;
-    const timestamp   = parseInt(Math.floor(targetDate.getTime() / 1000), 10);
+    const countryName   = li[1] ?? 'Unknown';
+    const leagueName    = li[3] ?? 'Unknown';
+    const dateStr       = formatDate(targetDate);
+    const timeStr       = typeof m[16] === 'string' ? m[16] : '00:00';
+    const isoDate       = `${dateStr}T${timeStr}:00+03:00`;
+    const timestamp     = Math.floor(targetDate.getTime() / 1000);
 
     const homeWin = homeGoals !== null && awayGoals !== null
         ? (homeGoals > awayGoals ? true : homeGoals === awayGoals ? null : false) : null;
     const awayWin = homeGoals !== null && awayGoals !== null
         ? (awayGoals > homeGoals ? true : homeGoals === awayGoals ? null : false) : null;
 
-    const homeLogoUrl   = homeId > 0 ? `https://im.mackolik.com/img/logo/buyuk/${homeId}.gif` : null;
-    const awayLogoUrl   = awayId > 0 ? `https://im.mackolik.com/img/logo/buyuk/${awayId}.gif` : null;
-    const leagueLogoUrl = countryId > 0 ? `https://im.mackolik.com/img/groups/${countryId}.gif` : null;
+    const homeLogoUrl   = homeId   > 0 ? `https://im.mackolik.com/img/logo/buyuk/${homeId}.gif` : null;
+    const awayLogoUrl   = awayId   > 0 ? `https://im.mackolik.com/img/logo/buyuk/${awayId}.gif` : null;
+    const leagueLogoUrl = countryId > 0 ? `https://im.mackolik.com/img/groups/${countryId}.gif`  : null;
 
     return {
         fixture: {
@@ -178,44 +172,36 @@ function parseMatch(m, targetDate) {
             status:    status,
         },
         league: {
-            id:         leagueId,
-            name:       leagueName,
-            country:    countryName,
-            logo:       leagueLogoUrl,
-            flag:       null,
-            season:     seasonYear,
-            round:      'Regular Season',
-            standings:  false
+            id:        leagueId,
+            name:      leagueName,
+            country:   countryName,
+            logo:      leagueLogoUrl,
+            flag:      null,
+            season:    seasonYear,
+            round:     'Regular Season',
+            standings: false,
         },
         teams: {
-            home: {
-                id:     0,
-                name:   m[2] || 'Unknown',
-                logo:   homeLogoUrl,
-                winner: homeWin
-            },
-            away: {
-                id:     0,
-                name:   m[4] || 'Unknown',
-                logo:   awayLogoUrl,
-                winner: awayWin
-            }
+            home: { id: 0, name: m[2] || 'Unknown', logo: homeLogoUrl, winner: homeWin },
+            away: { id: 0, name: m[4] || 'Unknown', logo: awayLogoUrl, winner: awayWin },
         },
-        goals: {
-            home: homeGoals,
-            away: awayGoals,
-        },
+        goals: { home: homeGoals, away: awayGoals },
         score: {
             halftime:  { home: htHome,    away: htAway    },
             fulltime:  { home: homeGoals, away: awayGoals },
             extratime: { home: null,      away: null      },
             penalty:   { home: null,      away: null      },
         },
-        events: []
+        events:  [],
+        // ── enrichMatchEvents tarafından doldurulur ──
+        lineups: {
+            home: { startXI: [], substitutes: [] },
+            away: { startXI: [], substitutes: [] },
+        },
     };
 }
 
-// ─── MAÇ DETAYLARINI (EVENTS) MACKOLİK API'DEN ÇEK ──────────────────────────
+// ─── MAÇ DETAYLARINI (EVENTS + LINEUPS) MACKOLİK API'DEN ÇEK ────────────────
 function fetchMatchDetails(matchId) {
     return new Promise((resolve) => {
         const url = `https://arsiv.mackolik.com/Match/MatchData.aspx?t=dtl&id=${matchId}&s=0`;
@@ -223,12 +209,12 @@ function fetchMatchDetails(matchId) {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                 'Accept':     'application/json',
-                'Referer':    `https://arsiv.mackolik.com/Mac/${matchId}/`
+                'Referer':    `https://arsiv.mackolik.com/Mac/${matchId}/`,
             }
         };
 
-        const MAX_RETRY = 3;
-        const RETRY_DELAY = [1000, 2500, 5000]; // her deneme arası bekleme (ms)
+        const MAX_RETRY   = 3;
+        const RETRY_DELAY = [1000, 2500, 5000];
 
         const attempt = (tryNum) => {
             https.get(url, options, res => {
@@ -236,12 +222,14 @@ function fetchMatchDetails(matchId) {
                 res.on('data', chunk => raw += chunk);
                 res.on('end', () => {
 
-                    // ── 502 / HTML hata sayfası kontrolü ──
+                    // ── HTML / 502 hata sayfası ──
                     if (raw.trimStart().startsWith('<')) {
-                        const isGatewayErr = res.statusCode >= 500 || raw.includes('Bad Gateway') || raw.includes('Service Unavailable');
+                        const isGatewayErr = res.statusCode >= 500
+                            || raw.includes('Bad Gateway')
+                            || raw.includes('Service Unavailable');
                         if (isGatewayErr && tryNum < MAX_RETRY) {
                             const delay = RETRY_DELAY[tryNum - 1] || 5000;
-                            log(`  🔁 ${res.statusCode} hatası matchId=${matchId}, ${delay}ms sonra retry ${tryNum}/${MAX_RETRY}...`);
+                            log(`  🔁 ${res.statusCode} matchId=${matchId}, ${delay}ms retry ${tryNum}/${MAX_RETRY}...`);
                             setTimeout(() => attempt(tryNum + 1), delay);
                             return;
                         }
@@ -251,29 +239,26 @@ function fetchMatchDetails(matchId) {
                     }
 
                     // ── JSON parse: önce direkt, başarısız olursa temizleyerek ──
-                    let parsed = null;
                     try {
-                        parsed = JSON.parse(raw);
+                        resolve(JSON.parse(raw));
                     } catch (e1) {
                         try {
                             const cleaned = raw
                                 .replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
                                 .replace(/[\x00-\x1F\x7F]/g, ' ');
-                            parsed = JSON.parse(cleaned);
+                            const parsed = JSON.parse(cleaned);
                             log(`  🔧 JSON onarıldı: matchId=${matchId}`);
+                            resolve(parsed);
                         } catch (e2) {
                             logErr(`  ❌ JSON parse hatası matchId=${matchId}: ${e2.message} | ham: ${raw.slice(0, 120)}`);
                             resolve(null);
-                            return;
                         }
                     }
-
-                    resolve(parsed);
                 });
             }).on('error', err => {
                 if (tryNum < MAX_RETRY) {
                     const delay = RETRY_DELAY[tryNum - 1] || 5000;
-                    log(`  🔁 Bağlantı hatası matchId=${matchId} (${err.message}), ${delay}ms sonra retry ${tryNum}/${MAX_RETRY}...`);
+                    log(`  🔁 Bağlantı hatası matchId=${matchId} (${err.message}), ${delay}ms retry ${tryNum}/${MAX_RETRY}...`);
                     setTimeout(() => attempt(tryNum + 1), delay);
                 } else {
                     logErr(`  ❌ HTTP hatası matchId=${matchId}: ${err.message}`);
@@ -286,8 +271,9 @@ function fetchMatchDetails(matchId) {
     });
 }
 
+// ─── EVENTS + LINEUPS ENRİCH ──────────────────────────────────────────────────
 async function enrichMatchEvents(matches) {
-    log(`\n🔍 Events çekiliyor... Toplam: ${matches.length} maç`);
+    log(`\n🔍 Events + Lineups çekiliyor... Toplam: ${matches.length} maç`);
 
     const eligible = matches.filter(m => !['NS', 'PST', 'CANC'].includes(m.fixture.status.short));
     log(`  📌 Uygun maç (NS/PST/CANC dışı): ${eligible.length}`);
@@ -322,7 +308,7 @@ async function enrichMatchEvents(matches) {
                 return;
             }
 
-            // ── Lineup: details geldiği sürece kaydet (events boş olsa bile) ──
+            // ── Lineup: details geldiği sürece kaydet ──
             match.lineups = {
                 home: parsePlayers(details.h, 11),
                 away: parsePlayers(details.a, 11),
@@ -331,7 +317,7 @@ async function enrichMatchEvents(matches) {
             // ── Events ──
             if (!details.e || !Array.isArray(details.e) || details.e.length === 0) {
                 emptyCount++;
-                return; // lineup kaydedildi, events yok, devam
+                return;
             }
 
             fetchedCount++;
@@ -346,36 +332,21 @@ async function enrichMatchEvents(matches) {
                 const teamSide = teamCode === 1 ? 'home' : 'away';
                 const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
 
-                let typeStr   = 'Other';
-                let detailStr = '';
+                let typeStr    = 'Other';
+                let detailStr  = '';
                 let assistName = null;
 
                 switch (typeCode) {
                     case 1:
-                        typeStr   = 'Goal';
-                        detailStr = 'Normal Goal';
+                        typeStr    = 'Goal';
+                        detailStr  = 'Normal Goal';
                         if (extra.astName) assistName = `(${extra.astName})`;
                         break;
-                    case 2:
-                        typeStr   = 'Card';
-                        detailStr = 'Yellow Card';
-                        break;
-                    case 3:
-                        typeStr   = 'Card';
-                        detailStr = 'Red Card';
-                        break;
-                    case 6:
-                        typeStr   = 'Card';
-                        detailStr = 'Yellow Red Card';
-                        break;
-                    case 4:
-                        typeStr   = 'subst';
-                        detailStr = 'Substitution';
-                        break;
-                    default:
-                        typeStr   = 'Other';
-                        detailStr = '';
-                        break;
+                    case 2:  typeStr = 'Card';  detailStr = 'Yellow Card';      break;
+                    case 3:  typeStr = 'Card';  detailStr = 'Red Card';         break;
+                    case 6:  typeStr = 'Card';  detailStr = 'Yellow Red Card';  break;
+                    case 4:  typeStr = 'subst'; detailStr = 'Substitution';     break;
+                    default: typeStr = 'Other'; detailStr = '';                 break;
                 }
 
                 return {
@@ -387,17 +358,15 @@ async function enrichMatchEvents(matches) {
                     assistName:  assistName ? String(assistName) : null,
                     teamSide:    String(teamSide),
                     teamId:      0,
-                    teamName:    String(teamName)
+                    teamName:    String(teamName),
                 };
             });
         }));
 
-        if (i + CONCURRENCY_LIMIT < eligible.length) {
-            await sleep(500);
-        }
+        if (i + CONCURRENCY_LIMIT < eligible.length) await sleep(500);
     }
 
-    log(`  ✅ Events tamamlandı → Dolu: ${fetchedCount} | Boş: ${emptyCount} | Hata: ${failedCount}`);
+    log(`  ✅ Tamamlandı → Events dolu: ${fetchedCount} | Boş: ${emptyCount} | Hata: ${failedCount}`);
     return matches;
 }
 
@@ -410,34 +379,58 @@ async function collectMatches(targetDate) {
     const raw  = data.m || [];
     log(`  📦 Ham kayıt: ${raw.length}`);
 
-    const matches = raw
-        .map(m => parseMatch(m, targetDate))
-        .filter(Boolean);
-
+    const matches = raw.map(m => parseMatch(m, targetDate)).filter(Boolean);
     log(`  ✅ Parse edilen: ${matches.length} maç`);
     return matches;
 }
 
 // ─── FİRESTORE KAYDET ────────────────────────────────────────────────────────
+// Yapı: archive_matches/{date}/fixtures/{matchId}
+// Her maç ayrı döküman → 1MB limit yok, backfill güvenle çalışır.
 async function saveToFirestore(db, dateStr, matches) {
-    await db.collection('archive_matches').doc(dateStr).set({
-        fixtures:      matches,
+    const dateRef  = db.collection('archive_matches').doc(dateStr);
+    const BATCH_SZ = 400;
+
+    // Index dökümanı (hafif özet)
+    await dateRef.set({
         last_updated:  new Date().toISOString(),
         total_matches: matches.length,
+        match_ids:     matches.map(m => m.fixture.id),
     }, { merge: true });
 
-    log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}`);
+    // Maçları batch halinde alt koleksiyona yaz
+    let batch   = db.batch();
+    let opCount = 0;
+    let written = 0;
 
-    const leagues = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
-    log(`  📋 ${leagues.length} lig: ${leagues.slice(0, 6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length - 6}` : ''}`);
+    for (const match of matches) {
+        const ref = dateRef.collection('fixtures').doc(String(match.fixture.id));
+        batch.set(ref, match);
+        opCount++;
+        written++;
 
-    const withScore = matches.filter(m => m.goals.home !== null).length;
+        if (opCount >= BATCH_SZ) {
+            await batch.commit();
+            log(`  💾 Batch commit: ${written}/${matches.length}`);
+            batch   = db.batch();
+            opCount = 0;
+        }
+    }
+
+    if (opCount > 0) await batch.commit();
+
+    // Özet log
+    const leagues     = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
+    const withScore   = matches.filter(m => m.goals.home !== null).length;
+    const withEvents  = matches.filter(m => m.events?.length > 0).length;
+    const withLineups = matches.filter(m => m.lineups?.home?.startXI?.length > 0).length;
+    const totalEvents = matches.reduce((s, m) => s + (m.events?.length || 0), 0);
+
+    log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}/fixtures/`);
+    log(`  📋 ${leagues.length} lig: ${leagues.slice(0,6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length-6}` : ''}`);
     log(`  ⚽ Skoru olan: ${withScore}/${matches.length}`);
-
-    // ── DÜZELTME 3: Events özeti loglanıyor ──
-    const withEvents  = matches.filter(m => m.events && m.events.length > 0).length;
-    const totalEvents = matches.reduce((sum, m) => sum + (m.events?.length || 0), 0);
-    log(`  🎯 Events olan maç: ${withEvents}/${matches.length} | Toplam event: ${totalEvents}`);
+    log(`  🎯 Events: ${withEvents}/${matches.length} | Toplam: ${totalEvents}`);
+    log(`  👕 Lineup: ${withLineups}/${matches.length}`);
 }
 
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
@@ -482,8 +475,9 @@ async function processDate(db, targetDate) {
                 const d = new Date(start);
                 d.setUTCDate(start.getUTCDate() + i);
                 await processDate(db, d);
-                if (i < total - 1) await sleep(800 + Math.random() * 400);
+                if (i < total - 1) await sleep(1000 + Math.random() * 500);
             }
+
         } else {
             throw new Error(`Bilinmeyen mod: ${MODE}. (daily | single | backfill)`);
         }
