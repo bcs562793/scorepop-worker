@@ -536,8 +536,16 @@ async function collectMatches(targetDate) {
     const raw  = data.m || [];
     log(`  📦 Ham kayıt: ${raw.length}`);
 
-    const matches = raw.map(m => parseMatch(m, targetDate)).filter(Boolean);
-    log(`  ✅ Parse edilen: ${matches.length} maç`);
+    const all = raw.map(m => parseMatch(m, targetDate)).filter(Boolean);
+    
+    // ── Sadece biten maçları kaydet ──
+    const matches = all.filter(m => ['FT', 'AET', 'PEN'].includes(m.fixture.status.short));
+    const skipped = all.length - matches.length;
+    
+    log(`  ✅ Parse edilen: ${all.length} maç`);
+    if (skipped > 0) log(`  ⏭️  Atlandı (bitmemiş): ${skipped} maç`);
+    log(`  💾 Kaydedilecek (FT/AET/PEN): ${matches.length} maç`);
+    
     return matches;
 }
 
