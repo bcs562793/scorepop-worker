@@ -644,7 +644,13 @@ async function fetchMatchH2H(matchId) {
     const url = `https://arsiv.mackolik.com/Match/Head2Head.aspx?id=${matchId}&s=1`;
     try {
         const raw = await httpGet(url, { 'Referer': `https://arsiv.mackolik.com/Mac/${matchId}/` });
-        return parseH2HHtml(raw);
+        
+        // DEBUG
+        log(`  🔍 H2H ham uzunluk=${raw.length} | ilk200: ${raw.slice(0, 200).replace(/\s+/g, ' ')}`);
+        
+        const result = parseH2HHtml(raw);
+        log(`  🔍 H2H parse: h2h=${result.h2h.length} form=${result.homeForm.length}/${result.awayForm.length}`);
+        return result;
     } catch (e) {
         logErr(`  ❌ H2H matchId=${matchId}: ${e.message}`);
         return null;
