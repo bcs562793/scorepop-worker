@@ -191,8 +191,6 @@ function fetchMatchStandings(matchId) {
     });
 }
 
-// ─── PUAN TABLOSUNU JSON ŞABLONUNA UYDURMA ────────────────────────────────────
-// ─── PUAN TABLOSUNU JSON ŞABLONUNA UYDURMA ────────────────────────────────────
 function parseStandingsHtml(html) {
     const standings = [];
 
@@ -203,7 +201,7 @@ function parseStandingsHtml(html) {
     while ((row = rowRegex.exec(html)) !== null) {
         const block = row[0];
 
-        // teamId
+        // teamId — iki olası konum
         const teamIdMatch = block.match(/data-teamid="(\d+)"/);
         if (!teamIdMatch) continue;
         const teamId = parseInt(teamIdMatch[1], 10);
@@ -213,41 +211,29 @@ function parseStandingsHtml(html) {
         if (!rankMatch) continue;
         const rank = parseInt(rankMatch[1], 10);
 
-        // Takım adı
+        // Takım adı — href içindeki text
         const nameMatch = block.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
         const name = nameMatch ? nameMatch[1].trim() : '';
 
-        // 🔥 Senin çalışan efsane Regex'in! (O, G, B, M, P değerlerini alır)
+        // Sayısal sütunlar: O G B M P
+        // Sayısal sütunlar: O G B M P  (P <b> ile sarılı olabilir)
         const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(\d+)(?:<\/b>)?<\/td>/g)]
-            .map(m => parseInt(m[1], 10));
+       .map(m => parseInt(m[1], 10));
 
-        // Mackolik align="right" formatında sadece 5 sütun veriyor
         if (nums.length < 5) continue;
 
         const [played, win, draw, lose, points] = nums;
 
-        // 🔥 Flutter'ın çökmemesi için JSON'u "all" objesi içine sardık
         standings.push({
-            rank: rank,
+            rank,
             team: {
                 id:   teamId,
                 name: name,
                 logo: `https://im.mackolik.com/img/logo/buyuk/${teamId}.gif`,
             },
-            points: points,
-            goalsDiff: 0, // Eksik sütunlar şimdilik 0
-            form: '',
-            description: '',
-            all: {
-                played: played,
-                win: win,
-                draw: draw,
-                lose: lose,
-                goals: {
-                    for: 0,
-                    against: 0
-                }
-            }
+            played, win, draw, lose, points,
+            gf: 0, ga: 0, gd: 0,
+            form: '', description: '',
         });
     }
 
@@ -593,46 +579,40 @@ async function collectMatches(targetDate) {
 
 // ─── FİRESTORE KAYDET ────────────────────────────────────────────────────────
 // Yapı: archive_matches/{date}/fixtures/{matchId}
+// Her maç ayrı döküman → 1MB limit yok, backfill güvenle çalışır.
 async function saveToFirestore(db, dateStr, matches) {
-    const dateRef = db.collection('archive_matches').doc(dateStr);
+    const dateRef  = db.collection('archive_matches').doc(dateStr);
+    const BATCH_SZ = 400;
 
-    // Index dökümanı
+    // Index dökümanı (hafif özet)
     await dateRef.set({
         last_updated:  new Date().toISOString(),
         total_matches: matches.length,
         match_ids:     matches.map(m => m.fixture.id),
     }, { merge: true });
 
-    // ── Her maçı ayrı ayrı yaz (batch timeout sorununu çözer) ──
+    // Maçları batch halinde alt koleksiyona yaz
+    let batch   = db.batch();
+    let opCount = 0;
     let written = 0;
+
     for (const match of matches) {
         const ref = dateRef.collection('fixtures').doc(String(match.fixture.id));
-        let attempt = 1;
-        while (attempt <= 3) {
-            try {
-                await ref.set(match);
-                written++;
-                break;
-            } catch (err) {
-                if (attempt < 3 && (err.code === 4 || err.message.includes('DEADLINE_EXCEEDED') || err.message.includes('UNAVAILABLE'))) {
-                    const delay = attempt * 3000;
-                    log(`  🔁 Firestore timeout matchId=${match.fixture.id}, ${delay}ms retry ${attempt}/3...`);
-                    await sleep(delay);
-                    attempt++;
-                } else {
-                    logErr(`  ❌ Firestore yazma hatası matchId=${match.fixture.id}: ${err.message}`);
-                    break;
-                }
-            }
-        }
+        batch.set(ref, match);
+        opCount++;
+        written++;
 
-        // Her 50 yazımda bir kısa mola
-        if (written % 50 === 0) {
-            log(`  💾 Yazıldı: ${written}/${matches.length}`);
-            await sleep(300);
+        if (opCount >= BATCH_SZ) {
+            await batch.commit();
+            log(`  💾 Batch commit: ${written}/${matches.length}`);
+            batch   = db.batch();
+            opCount = 0;
         }
     }
 
+    if (opCount > 0) await batch.commit();
+
+    // Özet log
     const leagues       = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
     const withScore     = matches.filter(m => m.goals.home !== null).length;
     const withEvents    = matches.filter(m => m.events?.length > 0).length;
@@ -641,7 +621,7 @@ async function saveToFirestore(db, dateStr, matches) {
     const withStandings = matches.filter(m => m.standings?.length > 0).length;
     const totalEvents   = matches.reduce((s, m) => s + (m.events?.length || 0), 0);
 
-    log(`  ✅ ${written}/${matches.length} maç → archive_matches/${dateStr}/fixtures/`);
+    log(`  ✅ ${matches.length} maç → archive_matches/${dateStr}/fixtures/`);
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0,6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length-6}` : ''}`);
     log(`  ⚽ Skoru olan: ${withScore}/${matches.length}`);
     log(`  🎯 Events: ${withEvents}/${matches.length} | Toplam: ${totalEvents}`);
