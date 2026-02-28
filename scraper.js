@@ -1,15 +1,24 @@
 /**
  * ScorePop — Mackolik → Firebase Scraper
- * v3: Rate-limit koruması, stats fallback, sıralı işlem.
+ * v4: gzip decode düzeltmesi, stats ham log, penalty/own goal desteği.
  *
  * Kullanım:
  *   node scraper.js --mode=daily
  *   node scraper.js --mode=single --date=2026-02-24
  *   node scraper.js --mode=backfill --from=2026-02-01 --to=2026-02-28
+ *
+ * Opsiyonel parametreler:
+ *   --concurrency=2   Aynı anda işlenecek maç sayısı
+ *   --delayMin=600    Batch arası min bekleme (ms)
+ *   --delayMax=1400   Batch arası max bekleme (ms)
+ *   --extraDelay=800  Stats/standings öncesi ek bekleme (ms)
+ *   --skipStats       Stats çekmeyi atla (hız için)
+ *   --skipStandings   Standings çekmeyi atla (hız için)
  */
 
-const https = require('https');
-const fs    = require('fs');
+const https  = require('https');
+const zlib   = require('zlib');   // ← gzip/deflate decode için
+const fs     = require('fs');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore }        = require('firebase-admin/firestore');
 
@@ -23,26 +32,26 @@ process.on('unhandledRejection', e => { logErr('💥 REJECTION:', e?.stack || e)
 
 // ─── ARGS ────────────────────────────────────────────────────────────────────
 const args = Object.fromEntries(
-    process.argv.slice(2).filter(a => a.startsWith('--')).map(a => a.slice(2).split('='))
+    process.argv.slice(2).filter(a => a.startsWith('--')).map(a => {
+        const [k, ...v] = a.slice(2).split('=');
+        return [k, v.length ? v.join('=') : 'true'];
+    })
 );
-const MODE      = args.mode || 'daily';
-const SINGLE    = args.date || null;
-const FROM_DATE = args.from || null;
-const TO_DATE   = args.to   || null;
-
-// ─── RATE LİMİT AYARLARI ─────────────────────────────────────────────────────
-// Aynı anda kaç maçın detayı işlensin
-const CONCURRENCY   = parseInt(args.concurrency || '2', 10);
-// Her maç isteği arasında ms (min-max arası random)
-const DELAY_MIN     = parseInt(args.delayMin    || '600',  10);
-const DELAY_MAX     = parseInt(args.delayMax    || '1400', 10);
-// Stats/standings için ekstra bekleme (bu endpoint'ler daha hassas)
-const EXTRA_DELAY   = parseInt(args.extraDelay  || '800',  10);
+const MODE           = args.mode          || 'daily';
+const SINGLE         = args.date          || null;
+const FROM_DATE      = args.from          || null;
+const TO_DATE        = args.to            || null;
+const CONCURRENCY    = parseInt(args.concurrency  || '2',    10);
+const DELAY_MIN      = parseInt(args.delayMin      || '600',  10);
+const DELAY_MAX      = parseInt(args.delayMax      || '1400', 10);
+const EXTRA_DELAY    = parseInt(args.extraDelay    || '800',  10);
+const SKIP_STATS     = args.skipStats     === 'true';
+const SKIP_STANDINGS = args.skipStandings === 'true';
 
 log('🤖 ScorePop Mackolik Botu Başlatılıyor...');
 log(`📋 Mod: ${MODE.toUpperCase()}${SINGLE ? ` | Tarih: ${SINGLE}` : ''}`);
-log(`⚡ Concurrency: ${CONCURRENCY} | Delay: ${DELAY_MIN}-${DELAY_MAX}ms`);
-log(`🔧 Node: ${process.version}`);
+log(`⚡ Concurrency: ${CONCURRENCY} | Delay: ${DELAY_MIN}-${DELAY_MAX}ms | ExtraDelay: ${EXTRA_DELAY}ms`);
+log(`🔧 Node: ${process.version} | Stats: ${SKIP_STATS ? 'ATLA' : 'ÇEK'} | Standings: ${SKIP_STANDINGS ? 'ATLA' : 'ÇEK'}`);
 
 // ─── FİREBASE ────────────────────────────────────────────────────────────────
 function initFirebase() {
@@ -80,7 +89,6 @@ const formatDate = d => d.toISOString().split('T')[0];
 const toMacDate  = d => { const [y, m, day] = formatDate(d).split('-'); return `${day}/${m}/${y}`; };
 
 // ─── HTTP YARDIMCISI ──────────────────────────────────────────────────────────
-// Ortak User-Agent havuzu — her istekte rastgele seç
 const UA_POOL = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
@@ -91,11 +99,7 @@ const UA_POOL = [
 const randUA = () => UA_POOL[Math.floor(Math.random() * UA_POOL.length)];
 
 /**
- * Güvenli HTTP GET — retry + 429/5xx koruması
- * @param {string} url
- * @param {object} extraHeaders
- * @param {number} maxRetry
- * @returns {Promise<string>}  ham response body
+ * Güvenli HTTP GET — retry + 429/5xx + gzip/deflate decode
  */
 function httpGet(url, extraHeaders = {}, maxRetry = 3) {
     return new Promise((resolve, reject) => {
@@ -107,18 +111,20 @@ function httpGet(url, extraHeaders = {}, maxRetry = 3) {
                     'User-Agent':      randUA(),
                     'Accept':          'text/html,application/json,*/*',
                     'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8',
-                    'Accept-Encoding': 'gzip, deflate, br',
+                    // ÖNEMLİ: gzip istiyoruz ama Node bunu kendisi decode etmiyor
+                    // → zlib ile manuel decode yapıyoruz (aşağıda)
+                    'Accept-Encoding': 'gzip, deflate',
                     'Connection':      'keep-alive',
                     ...extraHeaders,
                 }
             };
 
             https.get(url, options, res => {
-                // 429 Too Many Requests → her zaman retry
+                // 429 Too Many Requests
                 if (res.statusCode === 429) {
-                    const retryAfter = parseInt(res.headers['retry-after'] || '10', 10);
-                    const delay = Math.max(retryAfter * 1000, RETRY_DELAYS[tryNum - 1] || 10000);
-                    log(`  ⏳ 429 Rate-limit (${url.slice(0, 60)}...), ${delay}ms bekleniyor (deneme ${tryNum}/${maxRetry})...`);
+                    const retryAfter = parseInt(res.headers['retry-after'] || '15', 10);
+                    const delay = Math.max(retryAfter * 1000, RETRY_DELAYS[tryNum - 1] || 15000);
+                    log(`  ⏳ 429 Rate-limit (${url.slice(0, 55)}...), ${delay}ms bekleniyor...`);
                     if (tryNum < maxRetry) { setTimeout(() => attempt(tryNum + 1), delay); return; }
                     reject(new Error(`429 rate-limit aşıldı: ${url}`)); return;
                 }
@@ -127,16 +133,45 @@ function httpGet(url, extraHeaders = {}, maxRetry = 3) {
                 if (res.statusCode >= 500) {
                     const delay = RETRY_DELAYS[tryNum - 1] || 5000;
                     if (tryNum < maxRetry) {
-                        log(`  🔁 HTTP ${res.statusCode} (${url.slice(0, 60)}...), ${delay}ms retry ${tryNum}/${maxRetry}...`);
+                        log(`  🔁 HTTP ${res.statusCode} (${url.slice(0, 55)}...), ${delay}ms retry ${tryNum}/${maxRetry}...`);
                         setTimeout(() => attempt(tryNum + 1), delay);
                         return;
                     }
                     reject(new Error(`HTTP ${res.statusCode}: ${url}`)); return;
                 }
 
-                let raw = '';
-                res.on('data', chunk => raw += chunk);
-                res.on('end',  () => resolve(raw));
+                // ── gzip / deflate decode ──────────────────────────────────
+                const encoding = res.headers['content-encoding'] || '';
+                const chunks   = [];
+
+                res.on('data', chunk => chunks.push(chunk));
+                res.on('end', () => {
+                    const buf = Buffer.concat(chunks);
+
+                    const decode = (err, decoded) => {
+                        if (err) {
+                            // decode başarısız → ham buffer'ı string olarak ver
+                            resolve(buf.toString('utf8'));
+                        } else {
+                            resolve(decoded.toString('utf8'));
+                        }
+                    };
+
+                    if (encoding === 'gzip') {
+                        zlib.gunzip(buf, decode);
+                    } else if (encoding === 'deflate') {
+                        zlib.inflate(buf, (err, result) => {
+                            if (err) zlib.inflateRaw(buf, decode);
+                            else decode(null, result);
+                        });
+                    } else if (encoding === 'br') {
+                        zlib.brotliDecompress(buf, decode);
+                    } else {
+                        resolve(buf.toString('utf8'));
+                    }
+                });
+
+                res.on('error', err => reject(err));
             }).on('error', err => {
                 const delay = RETRY_DELAYS[tryNum - 1] || 5000;
                 if (tryNum < maxRetry) {
@@ -152,15 +187,18 @@ function httpGet(url, extraHeaders = {}, maxRetry = 3) {
     });
 }
 
-/** JSON gerektiren endpoint'ler için */
+/** JSON endpoint'ler için */
 async function httpGetJSON(url, extraHeaders = {}) {
     const raw = await httpGet(url, extraHeaders);
-    if (raw.trimStart().startsWith('<')) throw new Error(`HTML döndü (sunucu hatası): ${raw.slice(0, 80)}`);
+    if (raw.trimStart().startsWith('<')) throw new Error(`HTML döndü: ${raw.slice(0, 80)}`);
     try { return JSON.parse(raw); }
     catch (e1) {
         try {
-            const cleaned = raw.replace(/\\(?!["\\/bfnrtu])/g, '\\\\').replace(/[\x00-\x1F\x7F]/g, ' ');
-            return JSON.parse(cleaned);
+            const cleaned = raw
+                .replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
+                .replace(/[\x00-\x1F\x7F]/g, ' ');
+            const parsed = JSON.parse(cleaned);
+            return parsed;
         } catch (e2) {
             throw new Error(`JSON parse hatası: ${e2.message} | ham: ${raw.slice(0, 120)}`);
         }
@@ -170,8 +208,7 @@ async function httpGetJSON(url, extraHeaders = {}) {
 // ─── MACKOLİK ANA API ────────────────────────────────────────────────────────
 async function fetchMackolik(dateStr) {
     const url = `https://vd.mackolik.com/livedata?date=${encodeURIComponent(dateStr)}`;
-    const data = await httpGetJSON(url, { 'Referer': 'https://arsiv.mackolik.com/' });
-    return data;
+    return await httpGetJSON(url, { 'Referer': 'https://arsiv.mackolik.com/' });
 }
 
 // ─── STATUS PARSE ─────────────────────────────────────────────────────────────
@@ -214,19 +251,22 @@ const STATS_NAME_MAP = {
     'Sarı Kart':       'Yellow Cards',
     'Kırmızı Kart':    'Red Cards',
     'Kurtarış':        'Saves',
+    'Tehlikeli Ataklar':'Dangerous Attacks',
+    'Ataklar':         'Attacks',
 };
 
-function parseStatsHtml(html) {
+function parseStatsHtml(html, matchId) {
     if (!html || html.trim().length < 20) return [];
-    const stats  = [];
+    const stats    = [];
     const parseVal = v => {
-        v = (v || '').trim().replace('%', '');
+        v = (v || '').trim().replace(/%/g, '').replace(/&nbsp;/g, '').trim();
+        if (v === '' || v === '-') return 0;
         if (v.includes('/')) return v;
         const n = parseFloat(v);
         return isNaN(n) ? v : n;
     };
 
-    // ── Pattern 1: team-1-statistics-text / statistics-title-text / team-2-statistics-text ──
+    // ── Pattern 1: class içeren div'ler (yeni Mackolik tasarımı) ──
     const p1 = /team-1-statistics-text"[^>]*>([\s\S]*?)<\/div>[\s\S]*?statistics-title-text"[^>]*>([\s\S]*?)<\/div>[\s\S]*?team-2-statistics-text"[^>]*>([\s\S]*?)<\/div>/g;
     let m;
     while ((m = p1.exec(html)) !== null) {
@@ -234,48 +274,51 @@ function parseStatsHtml(html) {
         const titleTR = m[2].replace(/<[^>]+>/g, '').trim();
         const awayRaw = m[3].replace(/<[^>]+>/g, '').trim();
         const title   = STATS_NAME_MAP[titleTR] || titleTR;
-        if (title) stats.push({ type: title, homeVal: parseVal(homeRaw), awayVal: parseVal(awayRaw) });
+        if (title && homeRaw !== '' && awayRaw !== '')
+            stats.push({ type: title, homeVal: parseVal(homeRaw), awayVal: parseVal(awayRaw) });
     }
     if (stats.length > 0) return stats;
 
-    // ── Pattern 2: <td class="team1"> ... <td class="statsName"> ... <td class="team2"> ──
+    // ── Pattern 2: <td class="team1/2"> tablosu ──
     const p2 = /<td[^>]+class="[^"]*team1[^"]*"[^>]*>([\s\S]*?)<\/td>[\s\S]*?<td[^>]+class="[^"]*statsName[^"]*"[^>]*>([\s\S]*?)<\/td>[\s\S]*?<td[^>]+class="[^"]*team2[^"]*"[^>]*>([\s\S]*?)<\/td>/g;
     while ((m = p2.exec(html)) !== null) {
         const homeRaw = m[1].replace(/<[^>]+>/g, '').trim();
         const titleTR = m[2].replace(/<[^>]+>/g, '').trim();
         const awayRaw = m[3].replace(/<[^>]+>/g, '').trim();
         const title   = STATS_NAME_MAP[titleTR] || titleTR;
-        if (title) stats.push({ type: title, homeVal: parseVal(homeRaw), awayVal: parseVal(awayRaw) });
+        if (title && homeRaw !== '' && awayRaw !== '')
+            stats.push({ type: title, homeVal: parseVal(homeRaw), awayVal: parseVal(awayRaw) });
     }
     if (stats.length > 0) return stats;
 
-    // ── Pattern 3: JSON içinde gömülü stats objesi ──
-    const jsonMatch = html.match(/\{[\s\S]*"stats"[\s\S]*\}/);
+    // ── Pattern 3: JSON içinde gömülü stats ──
+    const jsonMatch = html.match(/\{[\s\S]*?"stats"[\s\S]*?\}/);
     if (jsonMatch) {
         try {
             const obj = JSON.parse(jsonMatch[0]);
-            if (Array.isArray(obj.stats)) {
+            if (Array.isArray(obj.stats) && obj.stats.length > 0) {
                 return obj.stats.map(s => ({
                     type:    STATS_NAME_MAP[s.name] || s.name || s.type || 'Unknown',
-                    homeVal: parseVal(String(s.home ?? s.homeVal ?? '')),
-                    awayVal: parseVal(String(s.away ?? s.awayVal ?? '')),
-                })).filter(s => s.type !== 'Unknown');
+                    homeVal: parseVal(String(s.home ?? s.homeVal ?? 0)),
+                    awayVal: parseVal(String(s.away ?? s.awayVal ?? 0)),
+                })).filter(s => s.type && s.type !== 'Unknown');
             }
         } catch(_) {}
     }
 
-    // Hiçbir pattern uymadı
-    if (html.trim().length > 100) {
-        log(`  ⚠️  Stats parse başarısız — ham örnek: ${html.slice(0, 200).replace(/\s+/g, ' ')}`);
+    // Hiçbir pattern uymadı — debug için ilk 300 karakteri logla
+    if (html.trim().length > 50) {
+        log(`  ⚠️  Stats boş matchId=${matchId} | encoding:${html.slice(0,2).split('').map(c=>c.charCodeAt(0)).join(',')} | ham: ${html.slice(0, 300).replace(/\s+/g, ' ')}`);
     }
     return [];
 }
 
 async function fetchMatchStats(matchId) {
+    if (SKIP_STATS) return [];
     const url = `https://arsiv.mackolik.com/AjaxHandlers/MatchHandler.aspx?command=optaStats&id=${matchId}`;
     try {
         const raw = await httpGet(url, { 'Referer': `https://arsiv.mackolik.com/Mac/${matchId}/` });
-        return parseStatsHtml(raw);
+        return parseStatsHtml(raw, matchId);
     } catch (e) {
         logErr(`  ❌ Stats matchId=${matchId}: ${e.message}`);
         return [];
@@ -291,13 +334,13 @@ function parseStandingsHtml(html) {
         const block       = row[0];
         const teamIdMatch = block.match(/data-teamid="(\d+)"/);
         if (!teamIdMatch) continue;
-        const teamId   = parseInt(teamIdMatch[1], 10);
+        const teamId    = parseInt(teamIdMatch[1], 10);
         const rankMatch = block.match(/<td[^>]*>\s*<b>(\d+)<\/b>\s*<\/td>/);
         if (!rankMatch) continue;
-        const rank     = parseInt(rankMatch[1], 10);
+        const rank      = parseInt(rankMatch[1], 10);
         const nameMatch = block.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
-        const name     = nameMatch ? nameMatch[1].trim() : '';
-        const nums     = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(\d+)(?:<\/b>)?<\/td>/g)]
+        const name      = nameMatch ? nameMatch[1].trim() : '';
+        const nums      = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(\d+)(?:<\/b>)?<\/td>/g)]
             .map(m => parseInt(m[1], 10));
         if (nums.length < 5) continue;
         const [played, win, draw, lose, points] = nums;
@@ -311,13 +354,13 @@ function parseStandingsHtml(html) {
 }
 
 async function fetchMatchStandings(matchId) {
+    if (SKIP_STANDINGS) return [];
     const url = `https://arsiv.mackolik.com/AjaxHandlers/StandingHandler.aspx?command=matchStanding&id=${matchId}&sv=1`;
     try {
-        const raw = await httpGet(url, { 'Referer': `https://arsiv.mackolik.com/Mac/${matchId}/` });
+        const raw    = await httpGet(url, { 'Referer': `https://arsiv.mackolik.com/Mac/${matchId}/` });
         const result = parseStandingsHtml(raw);
-        if (result.length === 0 && raw.trim().length > 100 && !raw.includes('502')) {
+        if (result.length === 0 && raw.trim().length > 100 && !raw.includes('502'))
             log(`  ⚠️  Standings boş matchId=${matchId} | ham: ${raw.slice(0, 120).replace(/\s+/g, ' ')}`);
-        }
         return result;
     } catch (e) {
         logErr(`  ❌ Standings matchId=${matchId}: ${e.message}`);
@@ -329,19 +372,17 @@ async function fetchMatchStandings(matchId) {
 /*
   Mackolik m dizisi (test edilmiş, onaylanmış):
   [0]  matchId
-  [1]  homeId
-  [2]  homeName
-  [3]  awayId
-  [4]  awayName
-  [5]  statusCode      (0=NS, 4=FT, 8=PEN, 9=PST, 20=ET)
-  [6]  statusText      ("MS", "Ert." vb.)
-  [7]  FINAL skor str  ("2-1")
+  [1]  homeId         [2]  homeName
+  [3]  awayId         [4]  awayName
+  [5]  statusCode     (0=NS, 4=FT, 8=PEN, 9=PST, 20=ET)
+  [6]  statusText     ("MS", "Ert." vb.)
+  [7]  FINAL skor str ("2-1")  — sadece görüntü
   [10] kırmızı kart ev  (int)
   [11] kırmızı kart dep (int)
-  [12] isabetli şut ev  (int)  ← shots on target, GOALS DEĞİL
-  [13] isabetli şut dep (int)  ← shots on target, GOALS DEĞİL
+  [12] isabetli şut ev  (int)  ← GOALS DEĞİL
+  [13] isabetli şut dep (int)  ← GOALS DEĞİL
   [16] saat string      ("20:45")
-  [18] oran 1  [19] oran X  [20] oran 2
+  [18] oran 1   [19] oran X   [20] oran 2
   [29] IY ev gol str    ("1")
   [30] IY dep gol str   ("0")
   [31] FT ev gol str    ("2")  ← gerçek final gol
@@ -367,13 +408,13 @@ function parseMatch(m, targetDate) {
         return isNaN(n) ? null : n;
     };
 
-    // ── GOLLER: m[31] / m[32] (string), fallback m[7] ──
+    // ── GOLLER: m[31] / m[32], fallback m[7] ──
     let homeGoals = toInt(m[31]);
     let awayGoals = toInt(m[32]);
     if (homeGoals === null || awayGoals === null) {
-        const scoreStr = typeof m[7] === 'string' ? m[7].trim() : '';
-        if (scoreStr.includes('-')) {
-            const [h, a] = scoreStr.split('-');
+        const s = typeof m[7] === 'string' ? m[7].trim() : '';
+        if (s.includes('-')) {
+            const [h, a] = s.split('-');
             homeGoals = homeGoals ?? toInt(h);
             awayGoals = awayGoals ?? toInt(a);
         }
@@ -405,15 +446,14 @@ function parseMatch(m, targetDate) {
     const timestamp   = Math.floor(targetDate.getTime() / 1000);
 
     const homeWin = homeGoals !== null && awayGoals !== null
-        ? (homeGoals > awayGoals ? true : homeGoals === awayGoals ? null : false) : null;
+        ? (homeGoals > awayGoals ? true  : homeGoals === awayGoals ? null : false) : null;
     const awayWin = homeGoals !== null && awayGoals !== null
-        ? (awayGoals > homeGoals ? true : homeGoals === awayGoals ? null : false) : null;
+        ? (awayGoals > homeGoals ? true  : homeGoals === awayGoals ? null : false) : null;
 
     const homeLogoUrl   = homeId    > 0 ? `https://im.mackolik.com/img/logo/buyuk/${homeId}.gif`  : null;
     const awayLogoUrl   = awayId    > 0 ? `https://im.mackolik.com/img/logo/buyuk/${awayId}.gif`  : null;
     const leagueLogoUrl = countryId > 0 ? `https://im.mackolik.com/img/groups/${countryId}.gif`   : null;
 
-    // İsabetli şutu başlangıç stats'ına koy; enrichMatchEvents'te optaStats ile genişler
     const initialStats = homeShotsOT !== null ? [{
         type: 'Shots on Goal', homeVal: homeShotsOT, awayVal: awayShotsOT ?? 0,
     }] : [];
@@ -452,6 +492,19 @@ function parseMatch(m, targetDate) {
     };
 }
 
+// ─── EVENT TYPE MAP ───────────────────────────────────────────────────────────
+// Mackolik typeCode → { type, detail }
+const EVENT_TYPE_MAP = {
+    1:  { type: 'Goal',  detail: 'Normal Goal'     },
+    12: { type: 'Goal',  detail: 'Penalty'         },  // penaltı golü
+    13: { type: 'Goal',  detail: 'Own Goal'        },  // kendi kalesine
+    2:  { type: 'Card',  detail: 'Yellow Card'     },
+    3:  { type: 'Card',  detail: 'Red Card'        },
+    6:  { type: 'Card',  detail: 'Yellow Red Card' },
+    4:  { type: 'subst', detail: 'Substitution'    },
+    5:  { type: 'Var',   detail: 'VAR Decision'    },
+};
+
 // ─── EVENTS + LINEUPS + STATS + STANDINGS ENRİCH ─────────────────────────────
 async function enrichMatchEvents(matches) {
     log(`\n🔍 Detaylar çekiliyor... ${matches.length} maç`);
@@ -461,7 +514,11 @@ async function enrichMatchEvents(matches) {
 
     const parsePlayers = (arr, count) => {
         if (!Array.isArray(arr)) return { startXI: [], substitutes: [] };
-        const players = arr.map(p => ({ id: Number(p[0]) || 0, name: String(p[1] || ''), number: Number(p[2]) || 0 }));
+        const players = arr.map(p => ({
+            id:     Number(p[0]) || 0,
+            name:   String(p[1] || ''),
+            number: Number(p[2]) || 0,
+        }));
         return { startXI: players.slice(0, count), substitutes: players.slice(count) };
     };
 
@@ -469,20 +526,18 @@ async function enrichMatchEvents(matches) {
     let fetchedStats  = 0, failedStats  = 0;
     let fetchedStand  = 0, failedStand  = 0;
 
-    // ── Sıralı mini-batch işlem ──────────────────────────────────────────────
-    // Her batch'te CONCURRENCY kadar maç, batch'ler arasında randWait()
     for (let i = 0; i < eligible.length; i += CONCURRENCY) {
-        const batch = eligible.slice(i, i + CONCURRENCY);
-        const batchNum = Math.floor(i / CONCURRENCY) + 1;
-        const totalBatches = Math.ceil(eligible.length / CONCURRENCY);
+        const batch      = eligible.slice(i, i + CONCURRENCY);
+        const batchNum   = Math.floor(i / CONCURRENCY) + 1;
+        const totalBatch = Math.ceil(eligible.length / CONCURRENCY);
 
-        log(`  📦 Batch ${batchNum}/${totalBatches} (maç ${i + 1}-${Math.min(i + CONCURRENCY, eligible.length)})`);
+        log(`  📦 Batch ${batchNum}/${totalBatch} (${i + 1}-${Math.min(i + CONCURRENCY, eligible.length)})`);
 
-        // Batch içi paralel — ama her maç için sırayla 3 endpoint çağrılır (paralel değil)
+        // Batch içi paralel; her maç kendi içinde sıralı 3 istek
         await Promise.all(batch.map(async (match) => {
             const matchId = match.fixture.id;
 
-            // ── 1. DETAILS (events + lineups) ──
+            // ── 1. DETAILS (events + lineups) ──────────────────────────────
             const details = await fetchMatchDetails(matchId);
             if (!details) {
                 failedDetails++;
@@ -494,29 +549,24 @@ async function enrichMatchEvents(matches) {
                     match.events = details.e.map(ev => {
                         const teamCode   = ev[0];
                         const minute     = ev[1];
-                        const playerName = ev[3];
+                        const playerName = ev[3] || '';
                         const typeCode   = ev[4];
                         const extra      = ev[5] || {};
-                        const teamSide   = teamCode === 1 ? 'home' : 'away';
-                        const teamName   = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
 
-                        let typeStr = 'Other', detailStr = '', assistName = null;
-                        switch (typeCode) {
-                            case 1: typeStr = 'Goal';  detailStr = 'Normal Goal';     if (extra.astName) assistName = extra.astName; break;
-                            case 2: typeStr = 'Card';  detailStr = 'Yellow Card';     break;
-                            case 3: typeStr = 'Card';  detailStr = 'Red Card';        break;
-                            case 6: typeStr = 'Card';  detailStr = 'Yellow Red Card'; break;
-                            case 4: typeStr = 'subst'; detailStr = 'Substitution';    break;
-                        }
+                        const teamSide = teamCode === 1 ? 'home' : 'away';
+                        const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
+
+                        const mapped = EVENT_TYPE_MAP[typeCode] || { type: 'Other', detail: '' };
+
                         return {
                             minute:      Number(minute) || 0,
-                            minuteExtra: null,
-                            type:        typeStr,
-                            detail:      detailStr,
-                            playerName:  playerName ? String(playerName) : '',
-                            assistName:  assistName ? String(assistName) : null,
+                            minuteExtra: extra.extraMin ? Number(extra.extraMin) : null,
+                            type:        mapped.type,
+                            detail:      mapped.detail,
+                            playerName:  String(playerName),
+                            assistName:  extra.astName ? String(extra.astName) : null,
                             teamSide,
-                            teamId:      0,
+                            teamId:      teamCode === 1 ? match.teams.home.id : match.teams.away.id,
                             teamName,
                         };
                     });
@@ -525,19 +575,17 @@ async function enrichMatchEvents(matches) {
                 }
             }
 
-            // ── 2. STATS — ayrı endpoint, ekstra bekleme ──
+            // ── 2. STATS ────────────────────────────────────────────────────
             await sleep(EXTRA_DELAY + Math.floor(Math.random() * 400));
             const statsResult = await fetchMatchStats(matchId);
             if (statsResult.length > 0) {
-                // optaStats varsa, initialStats'ı (sadece shots) değiştir
-                match.stats = statsResult;
+                match.stats = statsResult;   // optaStats varsa initialStats'ın üstüne yaz
                 fetchedStats++;
             } else {
-                // optaStats boş → initialStats (shots on target) kalsın
-                failedStats++;
+                failedStats++;               // initialStats (shots) korunur
             }
 
-            // ── 3. STANDINGS — en hassas endpoint, en uzun bekleme ──
+            // ── 3. STANDINGS ────────────────────────────────────────────────
             await sleep(EXTRA_DELAY + Math.floor(Math.random() * 600));
             const standResult = await fetchMatchStandings(matchId);
             if (standResult.length > 0) {
@@ -548,7 +596,6 @@ async function enrichMatchEvents(matches) {
             }
         }));
 
-        // Batch'ler arası bekleme (son batch hariç)
         if (i + CONCURRENCY < eligible.length) await randWait();
     }
 
@@ -571,7 +618,7 @@ async function collectMatches(targetDate) {
     const matches = all.filter(m => ['FT', 'AET', 'PEN'].includes(m.fixture.status.short));
     const skipped = all.length - matches.length;
 
-    log(`  ✅ Parse edilen: ${all.length} | Bitmemiş atlandı: ${skipped} | Kaydedilecek: ${matches.length}`);
+    log(`  ✅ Parse: ${all.length} futbol | Bitmemiş atlandı: ${skipped} | Kaydedilecek: ${matches.length}`);
     return matches;
 }
 
@@ -597,7 +644,7 @@ async function saveToFirestore(db, dateStr, matches) {
             } catch (err) {
                 if (attempt < 3 && (err.code === 4 || err.message.includes('DEADLINE_EXCEEDED') || err.message.includes('UNAVAILABLE'))) {
                     const delay = attempt * 3000;
-                    log(`  🔁 Firestore timeout matchId=${match.fixture.id}, ${delay}ms retry ${attempt}/3...`);
+                    log(`  🔁 Firestore timeout matchId=${match.fixture.id}, ${delay}ms retry...`);
                     await sleep(delay);
                     attempt++;
                 } else {
@@ -614,19 +661,19 @@ async function saveToFirestore(db, dateStr, matches) {
 
     const leagues       = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
     const withScore     = matches.filter(m => m.goals.home !== null).length;
-    const withEvents    = matches.filter(m => m.events?.length > 0).length;
+    const withEvents    = matches.filter(m => m.events?.length   > 0).length;
     const withLineups   = matches.filter(m => m.lineups?.home?.startXI?.length > 0).length;
-    const withStats     = matches.filter(m => m.stats?.length > 0).length;
+    const withStats     = matches.filter(m => m.stats?.length    > 0).length;
     const withStandings = matches.filter(m => m.standings?.length > 0).length;
     const totalEvents   = matches.reduce((s, m) => s + (m.events?.length || 0), 0);
 
     log(`\n  ✅ ${written}/${matches.length} maç → archive_matches/${dateStr}/fixtures/`);
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0, 6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length - 6}` : ''}`);
-    log(`  ⚽ Skoru olan: ${withScore}/${matches.length}`);
-    log(`  🎯 Events: ${withEvents}/${matches.length} (toplam ${totalEvents})`);
-    log(`  👕 Lineup: ${withLineups}/${matches.length}`);
-    log(`  📊 Stats: ${withStats}/${matches.length}`);
-    log(`  🏆 Standings: ${withStandings}/${matches.length}`);
+    log(`  ⚽ Skoru olan:   ${withScore}/${matches.length}`);
+    log(`  🎯 Events:       ${withEvents}/${matches.length} (toplam ${totalEvents})`);
+    log(`  👕 Lineup:       ${withLineups}/${matches.length}`);
+    log(`  📊 Stats:        ${withStats}/${matches.length}`);
+    log(`  🏆 Standings:    ${withStandings}/${matches.length}`);
 }
 
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
@@ -662,10 +709,7 @@ async function processDate(db, targetDate) {
             if (!FROM_DATE || !TO_DATE) throw new Error('--from ve --to gerekli! (YYYY-MM-DD)');
             let start = parseTargetDate(FROM_DATE);
             let end   = parseTargetDate(TO_DATE);
-            if (start > end) {
-                log(`⚠️  from > to, otomatik düzeltildi`);
-                [start, end] = [end, start];
-            }
+            if (start > end) { log('⚠️  from > to, düzeltildi'); [start, end] = [end, start]; }
             const total = Math.round((end - start) / 86400000) + 1;
             log(`🗓️  ${formatDate(start)} → ${formatDate(end)} (${total} gün)`);
             for (let i = 0; i < total; i++) {
