@@ -142,24 +142,18 @@ function parseStatus(statusCode, statusText) {
   [36] [countryId, countryName, leagueId, leagueName, tournId, season, "", aeleme, ?, leagueCode, ?, sportType]
   [37] hasOdds
 */
-// ─── TEK MAÇ PARSE ────────────────────────────────────────────────────────────
-// Durum kodu → flashscore uyumlu status objesi
-// ─── TEK MAÇ PARSE (KUSURSUZ SKOR VE İLK YARI YAMASI) ─────────────────────────
-// ─── TEK MAÇ PARSE (LOGOLAR DİNAMİK OLARAK EKLENDİ) ──────────────────────────
+// ─── TEK MAÇ PARSE (TAKIM ID'LERİ FLASHSCORE GİBİ 0'A SABİTLENDİ) ─────────────
 function parseMatch(m, targetDate) {
     if (!Array.isArray(m) || m.length < 37) return null;
 
     const li = Array.isArray(m[36]) ? m[36] : [];
-
-    // 🔥 BASKETBOLU TAMAMEN ÇÖPE AT (Sadece 1 = Futbol) 🔥
     const sportTypeId = parseInt(li[11], 10) || 1;
     if (sportTypeId !== 1) return null;
 
-    // 🔥 FLUTTER İÇİN ZORUNLU INTEGER DÖNÜŞÜMLERİ 🔥
     const matchId    = parseInt(m[0], 10) || 0;
-    const homeId     = parseInt(m[1], 10) || 0;
-    const awayId     = parseInt(m[3], 10) || 0;
-    const countryId  = parseInt(li[0], 10) || 0; // LİG/ÜLKE LOGOSU İÇİN
+    const homeId     = parseInt(m[1], 10) || 0; // Logo için gerçek ID'yi saklıyoruz
+    const awayId     = parseInt(m[3], 10) || 0; // Logo için gerçek ID'yi saklıyoruz
+    const countryId  = parseInt(li[0], 10) || 0; 
     const leagueId   = parseInt(li[2], 10) || 0;
     const seasonYear = parseInt(targetDate.getFullYear(), 10);
 
@@ -169,11 +163,9 @@ function parseMatch(m, targetDate) {
         return isNaN(n) ? null : n; 
     };
 
-    // 🔥 GERÇEK MAÇ SONUCU (FT) SKORLARI 🔥
     let homeGoals = toInt(m[12]);
     let awayGoals = toInt(m[13]);
     
-    // 🔥 "MS" YAZISINDAN SONRA GELEN İLK YARI (HT) SKORUNU PARÇALAMA 🔥
     let htHome = null;
     let htAway = null;
     const htStr = typeof m[7] === 'string' ? m[7].replace(/\s/g, '') : '';
@@ -183,79 +175,71 @@ function parseMatch(m, targetDate) {
         htAway = toInt(parts[1]);
     }
 
-    // Kırmızı Kartlar (8 ve 9. indeksler)
     const rcHome = toInt(m[8]) || 0;
     const rcAway = toInt(m[9]) || 0;
 
-    // Durum
     const statusCode = parseInt(m[5], 10) || 0;
     const statusText = typeof m[6] === 'string'  ? m[6] : '';
     const status     = parseStatus(statusCode, statusText);
 
-    // Lig bilgisi
     const countryName = li[1]  ?? 'Unknown';
     const leagueName  = li[3]  ?? 'Unknown';
-
-    // Tarih+saat
     const dateStr   = formatDate(targetDate);
     const timeStr   = typeof m[16] === 'string' ? m[16] : '00:00';
     const isoDate   = `${dateStr}T${timeStr}:00+03:00`;
     const timestamp = parseInt(Math.floor(targetDate.getTime() / 1000), 10);
 
-    // Kazananlar
     const homeWin = homeGoals !== null && awayGoals !== null
-        ? (homeGoals > awayGoals ? true : homeGoals === awayGoals ? null : false)
-        : null;
+        ? (homeGoals > awayGoals ? true : homeGoals === awayGoals ? null : false) : null;
     const awayWin = homeGoals !== null && awayGoals !== null
-        ? (awayGoals > homeGoals ? true : homeGoals === awayGoals ? null : false)
-        : null;
+        ? (awayGoals > homeGoals ? true : homeGoals === awayGoals ? null : false) : null;
 
-    // 🔥 HARİKA HİLE: LOGOLARI HTML'YE GİRMEDEN ID'LERDEN ÜRETİYORUZ 🔥
+    // Logoları arka planda gerçek ID'lerle buluyoruz
     const homeLogoUrl   = homeId > 0 ? `https://im.mackolik.com/img/logo/buyuk/${homeId}.gif` : null;
     const awayLogoUrl   = awayId > 0 ? `https://im.mackolik.com/img/logo/buyuk/${awayId}.gif` : null;
     const leagueLogoUrl = countryId > 0 ? `https://im.mackolik.com/img/groups/${countryId}.gif` : null;
 
     return {
         fixture: {
-            id:        matchId,        // INT
+            id:        matchId,
             raw_id:    null,
             referee:   null,
             timezone:  'Europe/Istanbul',
             date:      isoDate,
-            timestamp: timestamp,      // INT
+            timestamp: timestamp,
             periods:   { first: null, second: null },
             venue:     { id: null, name: null, city: null },
             status:    status,
         },
         league: {
-            id:         leagueId,      // INT
+            id:         leagueId,
             name:       leagueName,
             country:    countryName,
-            logo:       leagueLogoUrl, // 🔥 LİG LOGOSU BURADA 🔥
+            logo:       leagueLogoUrl,
             flag:       null,
-            season:     seasonYear,    // INT
+            season:     seasonYear,
             round:      'Regular Season',
             standings:  false
         },
         teams: {
             home: {
-                id:     homeId,        // INT
+                id:     0,             // 🔥 FLUTTER İÇİN FLASHSCORE GİBİ "0" YAPILDI 🔥
                 name:   m[2] || "Unknown",
-                logo:   homeLogoUrl,   // 🔥 EV SAHİBİ LOGO BURADA 🔥
+                logo:   homeLogoUrl,
                 winner: homeWin,
                 red_cards: rcHome
             },
             away: {
-                id:     awayId,        // INT
+                id:     0,             // 🔥 FLUTTER İÇİN FLASHSCORE GİBİ "0" YAPILDI 🔥
                 name:   m[4] || "Unknown",
-                logo:   awayLogoUrl,   // 🔥 DEPLASMAN LOGO BURADA 🔥
+                logo:   awayLogoUrl,
                 winner: awayWin,
                 red_cards: rcAway
             }
         },
         goals: {
-            home: homeGoals, // INT
-            away: awayGoals, // INT
+            home: homeGoals,
+            away: awayGoals,
         },
         score: {
             halftime:  { home: htHome,    away: htAway    },
@@ -326,11 +310,12 @@ function fetchMatchDetails(matchId) {
     });
 }
 
-// 🔥 ROKET VERSİYONU (FLUTTER ENUM ÇÖKMELERİNİ ÖNLEYEN KUSURSUZ YAPI) 🔥
+// 🔥 EVENT TEAM ID'LERİ DE FLASHSCORE GİBİ 0'A SABİTLENDİ 🔥
 async function enrichMatchEvents(matches) {
     log(`\n🔍 Maç detayları (Events) çekiliyor... Toplam: ${matches.length} maç`);
     
     const CONCURRENCY_LIMIT = 15; 
+    let sampleLogged = false;
 
     for (let i = 0; i < matches.length; i += CONCURRENCY_LIMIT) {
         const chunk = matches.slice(i, i + CONCURRENCY_LIMIT);
@@ -338,7 +323,6 @@ async function enrichMatchEvents(matches) {
         await Promise.all(chunk.map(async (match) => {
             const matchId = match.fixture.id;
 
-            // Oynanmamış maçları es geç
             if (['NS', 'PST', 'CANC'].includes(match.fixture.status.short)) {
                 return;
             }
@@ -354,10 +338,11 @@ async function enrichMatchEvents(matches) {
                     const extra      = ev[5] || {};
 
                     const teamSide = teamCode === 1 ? 'home' : 'away';
-                    const teamName = teamCode === 1 ? match.teams.home.name : match.teams.away.name;
-                    const teamId   = teamCode === 1 ? match.teams.home.id : match.teams.away.id;
+                    const teamName = teamCode === 1 ? (match.teams.home.name || 'Unknown') : (match.teams.away.name || 'Unknown');
+                    
+                    // 🔥 SENİN MÜTHİŞ TESPİTİN: BURASI DA "0" OLMAK ZORUNDA! 🔥
+                    const teamId   = 0; 
 
-                    // 🔥 İŞTE FLUTTER'I ÇÖKMEKTEN KURTARAN MÜDAHALE 🔥
                     let typeStr    = 'Other';
                     let detailStr  = '';
                     let assistName = null;
@@ -367,26 +352,25 @@ async function enrichMatchEvents(matches) {
                         detailStr = 'Normal Goal';
                         if (extra.astName) assistName = `(${extra.astName})`;
                     } else if (typeCode === 2 || typeCode === 3 || typeCode === 6) {
-                        // Sarı ve Kırmızı kartlar KESİNLİKLE "Other" olmalı, yoksa Flutter patlar!
                         typeStr = 'Other';
                         detailStr = '';
+                        assistName = null;
                     } else if (typeCode === 4) {
-                        // Uygulaman "subst" kelimesini bekliyor
                         typeStr = 'subst';
                         detailStr = 'Substitution';
-                        assistName = null; // Senin çalışan JSON'unda buralar hep null'dı
+                        assistName = null; 
                     }
 
                     return {
-                        minute: minute,
+                        minute: Number(minute),
                         minuteExtra: null,
-                        type: typeStr,
-                        detail: detailStr,
-                        playerName: playerName,
-                        assistName: assistName,
-                        teamSide: teamSide,
-                        teamId: teamId,
-                        teamName: teamName
+                        type: String(typeStr),
+                        detail: String(detailStr),
+                        playerName: String(playerName),
+                        assistName: assistName ? String(assistName) : null,
+                        teamSide: String(teamSide),
+                        teamId: Number(teamId), // Artık her halükarda "0" gidecek!
+                        teamName: String(teamName)
                     };
                 });
             }
