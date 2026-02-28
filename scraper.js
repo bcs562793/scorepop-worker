@@ -777,31 +777,56 @@ function parseH2HHtml(html) {
 async function saveToFirestore(db, dateStr, matches) {
     const dateRef = db.collection('archive_matches').doc(dateStr);
 
-    // ── Ana document'a yaz (maclarByDate için 1 okuma = hızlı) ──
-    await dateRef.set({
-        last_updated:  new Date().toISOString(),
-        total_matches: matches.length,
-        match_ids:     matches.map(m => m.fixture.id),
-        fixtures:      matches,
-    });
+    // ── Ana document'a yaz (retry ile) ──
+    let mainAttempt = 1;
+    while (mainAttempt <= 3) {
+        try {
+            const start = Date.now();
+            await dateRef.set({
+                last_updated:  new Date().toISOString(),
+                total_matches: matches.length,
+                match_ids:     matches.map(m => m.fixture.id),
+                fixtures:      matches,
+            });
+            const elapsed = Date.now() - start;
+            if (elapsed > 500) {
+                log(`  ⏳ Ana doc yavaş: ${elapsed}ms`);
+                await sleep(300);
+            }
+            break;
+        } catch (err) {
+            if (mainAttempt < 3 && (err.code === 4 || err.message.includes('DEADLINE_EXCEEDED') || err.message.includes('UNAVAILABLE'))) {
+                const delay = mainAttempt * 3000;
+                log(`  🔁 Ana doc timeout ${dateStr}, ${delay}ms retry ${mainAttempt}/3...`);
+                await sleep(delay);
+                mainAttempt++;
+            } else {
+                logErr(`  ❌ Ana doc yazma hatası ${dateStr}: ${err.message}`);
+                break;
+            }
+        }
+    }
 
     const sizeKB = (JSON.stringify(matches).length / 1024).toFixed(1);
     log(`  📦 Document boyutu: ${sizeKB} KB`);
 
-    // ── Subcollection'a yaz (arsivMacDetay tekil okuma için) ──
+    // ── Subcollection'a yaz (50'şer 50'şer) ──
     let written = 0;
     for (const match of matches) {
         const ref = dateRef.collection('fixtures').doc(String(match.fixture.id));
         let attempt = 1;
         while (attempt <= 3) {
             try {
+                const start = Date.now();
                 await ref.set(match);
                 written++;
+                const elapsed = Date.now() - start;
+                if (elapsed > 500) await sleep(300);
                 break;
             } catch (err) {
                 if (attempt < 3 && (err.code === 4 || err.message.includes('DEADLINE_EXCEEDED') || err.message.includes('UNAVAILABLE'))) {
                     const delay = attempt * 3000;
-                    log(`  🔁 Firestore timeout matchId=${match.fixture.id}, ${delay}ms retry...`);
+                    log(`  🔁 Firestore timeout matchId=${match.fixture.id}, ${delay}ms retry ${attempt}/3...`);
                     await sleep(delay);
                     attempt++;
                 } else {
