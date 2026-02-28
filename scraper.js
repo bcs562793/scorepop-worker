@@ -704,6 +704,7 @@ function parseH2HHtml(html) {
 const formParts = html.split('Form Durumu');
     log(`  🔍 formParts uzunluk: ${formParts.length}`);  // ← buraya
 for (let fi = 1; fi <= 2; fi++) {
+    log(`  🔍 fi=${fi} tablo içerik: ${tableM[1].slice(0, 300).replace(/\s+/g, ' ')}`);
     if (!formParts[fi]) continue;
     const tableM = formParts[fi].match(/<table[^>]*>([\s\S]*?)<\/table>/);
     if (!tableM) continue;
