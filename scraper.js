@@ -704,11 +704,11 @@ function parseH2HHtml(html) {
 const formParts = html.split('Form Durumu');
     log(`  🔍 formParts uzunluk: ${formParts.length}`);  // ← buraya
 for (let fi = 1; fi <= 2; fi++) {
-    log(`  🔍 fi=${fi} tablo içerik: ${tableM[1].slice(0, 300).replace(/\s+/g, ' ')}`);
     if (!formParts[fi]) continue;
     const tableM = formParts[fi].match(/<table[^>]*>([\s\S]*?)<\/table>/);
     if (!tableM) continue;
     log(`  🔍 fi=${fi} img5 var mı: ${tableM[1].includes('img5')}`);
+    log(`  🔍 fi=${fi} tablo içerik: ${tableM[1].slice(0, 300).replace(/\s+/g, ' ')}`);
     const formRows = [];
     const rowRe2 = new RegExp('<tr[^>]*class="row alt[12]"[^>]*>([\\s\\S]*?)<\\/tr>', 'g'); // ← new RegExp
     let frow;
