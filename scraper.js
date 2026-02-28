@@ -707,6 +707,7 @@ for (let fi = 1; fi <= 2; fi++) {
     if (!formParts[fi]) continue;
     const tableM = formParts[fi].match(/<table[^>]*>([\s\S]*?)<\/table>/);
     if (!tableM) continue;
+    log(`  🔍 fi=${fi} img5 var mı: ${tableM[1].includes('img5')}`);
     const formRows = [];
     const rowRe2 = new RegExp('<tr[^>]*class="row alt[12]"[^>]*>([\\s\\S]*?)<\\/tr>', 'g'); // ← new RegExp
     let frow;
