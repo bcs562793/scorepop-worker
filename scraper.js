@@ -707,10 +707,14 @@ function parseH2HHtml(html) {
     }
 
     // ── 2. FORM (GÜNCELLENMİŞ, STABİL YÖNTEM) ────────────────────────────────
-    const allTables = [...html.matchAll(/<table[^>]*class="md-table3"[^>]*>([\s\S]*?)<\/table>/g)];
-    const formTables = allTables.filter(t => 
-        t[0].includes('img5/G.png') || t[0].includes('img5/B.png') || t[0].includes('img5/M.png')
-    );
+    // ── 2. FORM (NOKTA ATIŞI) ─────────────────────────────────────────────────
+    const formTables = [];
+    // Sayfadaki "Form Durumu" metninden hemen sonra gelen tabloları yakalar
+    const formRe = /Form Durumu[\s\S]*?<table[^>]*class="md-table3"[^>]*>([\s\S]*?)<\/table>/g;
+    let mForm;
+    while ((mForm = formRe.exec(html)) !== null) {
+        formTables.push(mForm[1]);
+    }
 
     const parseFormTable = (tableHtml) => {
         const rows = [];
@@ -735,8 +739,8 @@ function parseH2HHtml(html) {
         return rows;
     };
 
-    if (formTables.length > 0) result.homeForm = parseFormTable(formTables[0][1]);
-    if (formTables.length > 1) result.awayForm = parseFormTable(formTables[1][1]);
+    if (formTables.length > 0) result.homeForm = parseFormTable(formTables[0]);
+    if (formTables.length > 1) result.awayForm = parseFormTable(formTables[1]);
 
     // ── 3. EN GOLCÜLER ────────────────────────────────────────────────────────
     const scorerDivRe = /En Golc[üu]ler[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
