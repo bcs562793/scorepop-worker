@@ -218,8 +218,8 @@ function parseStandingsHtml(html) {
 
         // Sayısal sütunlar: O G B M A Y AV P  
         // DİKKAT: Averaj eksi olabileceği için "-?" eklendi!
-        const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(-?\d+)(?:<\/b>)?<\/td>/g)]
-            .map(m => parseInt(m[1], 10));
+        const nums = [...block.matchAll(/<td[^>]*align="right"[^>]*>(?:<b>)?(\d+)(?:<\/b>)?<\/td>/g)]
+        .map(m => parseInt(m[1], 10));
 
         // Eğer satırda 8 veri yoksa (O, G, B, M, A, Y, AV, P) burası puan tablosu değildir
         if (nums.length < 8) continue;
