@@ -781,6 +781,7 @@ async function saveToFirestore(db, dateStr, matches) {
         last_updated:  new Date().toISOString(),
         total_matches: matches.length,
         match_ids:     matches.map(m => m.fixture.id),
+        fixtures:      matches,  // ← tek seferde hepsi
     }, { merge: true });
 
     let written = 0;
