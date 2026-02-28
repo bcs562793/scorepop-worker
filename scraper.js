@@ -465,18 +465,25 @@ async function processDate(db, targetDate) {
             await processDate(db, parseTargetDate(SINGLE));
 
         } else if (MODE === 'backfill') {
-            if (!FROM_DATE || !TO_DATE) throw new Error('--from ve --to gerekli! (YYYY-MM-DD)');
-            const start = parseTargetDate(FROM_DATE);
-            const end   = parseTargetDate(TO_DATE);
-            const total = Math.round((end - start) / 86400000) + 1;
-            log(`🗓️  ${FROM_DATE} → ${TO_DATE} (${total} gün)`);
+    if (!FROM_DATE || !TO_DATE) throw new Error('--from ve --to gerekli! (YYYY-MM-DD)');
+    let start = parseTargetDate(FROM_DATE);
+    let end   = parseTargetDate(TO_DATE);
 
-            for (let i = 0; i < total; i++) {
-                const d = new Date(start);
-                d.setUTCDate(start.getUTCDate() + i);
-                await processDate(db, d);
-                if (i < total - 1) await sleep(1000 + Math.random() * 500);
-            }
+    // ── Ters yazılmışsa otomatik düzelt ──
+    if (start > end) {
+        log(`⚠️  from > to, otomatik düzeltildi: ${formatDate(end)} → ${formatDate(start)}`);
+        [start, end] = [end, start];
+    }
+
+    const total = Math.round((end - start) / 86400000) + 1;
+    log(`🗓️  ${formatDate(start)} → ${formatDate(end)} (${total} gün)`);
+
+    for (let i = 0; i < total; i++) {
+        const d = new Date(start);
+        d.setUTCDate(start.getUTCDate() + i);
+        await processDate(db, d);
+        if (i < total - 1) await sleep(1000 + Math.random() * 500);
+    }
 
         } else {
             throw new Error(`Bilinmeyen mod: ${MODE}. (daily | single | backfill)`);
