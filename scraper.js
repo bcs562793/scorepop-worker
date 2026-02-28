@@ -650,6 +650,10 @@ async function fetchMatchH2H(matchId) {
         
         const result = parseH2HHtml(raw);
         log(`  🔍 H2H parse: h2h=${result.h2h.length} form=${result.homeForm.length}/${result.awayForm.length}`);
+        log(`  🔍 md-table3 var mı: ${raw.includes('md-table3')}`);
+log(`  🔍 row alt1 var mı: ${raw.includes('row alt1')}`);
+log(`  🔍 Form Durumu var mı: ${raw.includes('Form Durumu')}`);
+log(`  🔍 En Golcü var mı: ${raw.includes('En Golc')}`);
         return result;
     } catch (e) {
         logErr(`  ❌ H2H matchId=${matchId}: ${e.message}`);
