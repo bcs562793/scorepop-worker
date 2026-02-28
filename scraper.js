@@ -675,6 +675,8 @@ function parseH2HHtml(html) {
         awayScorers: [],
     };
 
+    if (!html || typeof html !== 'string') return result;
+
     // ── 1. H2H SON 5 MAÇ ─────────────────────────────────────────────────────
     const h2hTableM = html.match(/<table[^>]+class="md-table3"[^>]*>([\s\S]*?)<\/table>/);
     if (h2hTableM) {
@@ -704,10 +706,7 @@ function parseH2HHtml(html) {
         }
     }
 
-    // ── 2. FORM ───────────────────────────────────────────────────────────────
     // ── 2. FORM (GÜNCELLENMİŞ, STABİL YÖNTEM) ────────────────────────────────
-    // Başlıklara (split) güvenmek yerine, içinde form ikonları (G, B, M) barındıran 
-    // tabloları HTML'den doğrudan çekiyoruz. İlk tablo Ev Sahibi, ikincisi Deplasman.
     const allTables = [...html.matchAll(/<table[^>]*class="md-table3"[^>]*>([\s\S]*?)<\/table>/g)];
     const formTables = allTables.filter(t => 
         t[0].includes('img5/G.png') || t[0].includes('img5/B.png') || t[0].includes('img5/M.png')
@@ -737,7 +736,7 @@ function parseH2HHtml(html) {
     };
 
     if (formTables.length > 0) result.homeForm = parseFormTable(formTables[0][1]);
-    if (formTables.length > 1) result.awayForm = parse
+    if (formTables.length > 1) result.awayForm = parseFormTable(formTables[1][1]);
 
     // ── 3. EN GOLCÜLER ────────────────────────────────────────────────────────
     const scorerDivRe = /En Golc[üu]ler[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
