@@ -677,40 +677,47 @@ function parseH2HHtml(html) {
 
     if (!html || typeof html !== 'string') return result;
 
-    // ── 1. H2H SON 5 MAÇ ─────────────────────────────────────────────────────
-    const h2hTableM = html.match(/<table[^>]+class="md-table3"[^>]*>([\s\S]*?)<\/table>/);
-    if (h2hTableM) {
+    // ── 1. H2H SON 5 MAÇ (TD SÜTUN İNDEKSİ İLE KUSURSUZ OKUMA) ───────────────
+    // "Aralarındaki Maçlar" başlığından sonraki ilk md-table3'ü alır
+    const h2hRe = /Aralarındaki Maçlar\s*<\/div>[\s\S]*?<table[^>]*class="md-table3"[^>]*>([\s\S]*?)<\/table>/;
+    const h2hMatch = html.match(h2hRe);
+    if (h2hMatch) {
         const rowRe = /<tr class="row alt[12]">([\s\S]*?)<\/tr>/g;
         let row;
-        while ((row = rowRe.exec(h2hTableM[0])) !== null) {
-            const b = row[0];
-            const linkM = b.match(/\/Mac\/(\d+)\/[^"]*"[^>]*>\s*<b>\s*(\d+)\s*-\s*(\d+)/);
-            if (!linkM) continue;
-            const matchId_  = parseInt(linkM[1], 10);
-            const homeGoals = parseInt(linkM[2], 10);
-            const awayGoals = parseInt(linkM[3], 10);
-            const tds       = [...b.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)];
-            const dateRaw   = tds[2] ? tds[2][1].replace(/<[^>]+>/g, '').trim() : '';
-            const homeM     = b.match(/align="right"[^>]*class="([^"]*)"[^>]*>[\s\S]*?(?:&nbsp;|<img[^>]*>)\s*([\s\S]*?)\s*<\/td>/);
-            const homeName  = homeM ? homeM[2].replace(/<[^>]+>/g, '').trim() : '';
-            const homeClass = homeM ? homeM[1] : '';
-            const awayM     = b.match(/class="[^"]*away[^"]*"[^>]*>\s*([\s\S]*?)\s*(?:&nbsp;)?\s*<\/td>/);
-            const awayName  = awayM ? awayM[1].replace(/<[^>]+>/g, '').trim() : '';
-            const htM       = b.match(/align="center">\s*(\d+)\s*-\s*(\d+)\s*<\/td>/);
-            const htHome    = htM ? parseInt(htM[1], 10) : null;
-            const htAway    = htM ? parseInt(htM[2], 10) : null;
-            const homeWinner = homeClass.includes('winner') ? true
-                             : homeClass.includes('draw')   ? null : false;
-            result.h2h.push({ matchId: matchId_, date: dateRaw, homeTeam: homeName, awayTeam: awayName, homeGoals, awayGoals, htHome, htAway, homeWinner });
-            if (result.h2h.length >= 5) break;
+        while ((row = rowRe.exec(h2hMatch[1])) !== null) {
+            // Her satırdaki hücreleri (td) yakalayıp diziye çeviriyoruz
+            const tds = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(t => t[1]);
+            if (tds.length >= 8) {
+                const dateRaw = tds[2].replace(/<[^>]+>/g, '').trim();
+                // Mackolik'in bozuk HTML'ine (<b> 0-0 </a></b>) özel skor yakalayıcı
+                const scoreM = tds[6].match(/\/Mac\/(\d+)\/[^>]+><b>\s*(\d+)\s*-\s*(\d+)/);
+                
+                if (!scoreM) continue; // "v" yazan (oynanmamış) maçları atla
+                
+                const matchId_  = parseInt(scoreM[1], 10);
+                const homeGoals = parseInt(scoreM[2], 10);
+                const awayGoals = parseInt(scoreM[3], 10);
+                
+                const homeName = tds[5].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim();
+                const awayName = tds[7].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim();
+                
+                const htM = tds[8].match(/(\d+)\s*-\s*(\d+)/);
+                const htHome = htM ? parseInt(htM[1], 10) : null;
+                const htAway = htM ? parseInt(htM[2], 10) : null;
+                
+                // Kazananı CSS'ten değil skorlardan biz hesaplıyoruz
+                const homeWinner = homeGoals > awayGoals ? true : (homeGoals < awayGoals ? false : null);
+                
+                result.h2h.push({ matchId: matchId_, date: dateRaw, homeTeam: homeName, awayTeam: awayName, homeGoals, awayGoals, htHome, htAway, homeWinner });
+                if (result.h2h.length >= 5) break;
+            }
         }
     }
 
-    // ── 2. FORM (GÜNCELLENMİŞ, STABİL YÖNTEM) ────────────────────────────────
-    // ── 2. FORM (NOKTA ATIŞI) ─────────────────────────────────────────────────
+    // ── 2. FORM (KUSURSUZ DİREKT EŞLEŞTİRME) ─────────────────────────────────
+    // Sadece Form Durumu başlığının hemen altındaki tabloları hedefler
     const formTables = [];
-    // Sayfadaki "Form Durumu" metninden hemen sonra gelen tabloları yakalar
-    const formRe = /Form Durumu[\s\S]*?<table[^>]*class="md-table3"[^>]*>([\s\S]*?)<\/table>/g;
+    const formRe = /Form Durumu\s*<\/div>\s*<table[^>]*>([\s\S]*?)<\/table>/g;
     let mForm;
     while ((mForm = formRe.exec(html)) !== null) {
         formTables.push(mForm[1]);
@@ -721,9 +728,9 @@ function parseH2HHtml(html) {
         const rowRe = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
         let m;
         while ((m = rowRe.exec(tableHtml)) !== null) {
-            const b = m[0];
+            const b = m[1];
             const imgM   = b.match(/img5\/(G|B|M)\.png/);
-            const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
+            const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)/);
             const dateM  = b.match(/<td[^>]*>\s*(\d{2}\.\d{2})\s*<\/td>/);
             
             if (imgM && scoreM) {
@@ -742,27 +749,32 @@ function parseH2HHtml(html) {
     if (formTables.length > 0) result.homeForm = parseFormTable(formTables[0]);
     if (formTables.length > 1) result.awayForm = parseFormTable(formTables[1]);
 
-    // ── 3. EN GOLCÜLER ────────────────────────────────────────────────────────
-    const scorerDivRe = /En Golc[üu]ler[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/g;
-    let scorerDiv;
-    let scorerIdx = 0;
-    while ((scorerDiv = scorerDivRe.exec(html)) !== null && scorerIdx < 2) {
-        const sec     = scorerDiv[1];
-        const scorers = [];
-        const rowRe3  = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-        let srow;
-        while ((srow = rowRe3.exec(sec)) !== null) {
-            const b      = srow[0];
-            const nameM  = b.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
-            const goalsM = b.match(/<b>(\d+)<\/b>/);
-            if (!nameM || !goalsM) continue;
-            scorers.push({ name: nameM[1].trim(), goals: parseInt(goalsM[1], 10) });
-            if (scorers.length >= 3) break;
-        }
-        if (scorerIdx === 0) result.homeScorers = scorers;
-        else                 result.awayScorers = scorers;
-        scorerIdx++;
+    // ── 3. EN GOLCÜLER (MD-TABLE TESPİTİ) ────────────────────────────────────
+    const scorerTables = [];
+    const scorerRe = /En Golc[üu]ler\s*<\/div>\s*<table[^>]*>([\s\S]*?)<\/table>/g;
+    let mScorer;
+    while ((mScorer = scorerRe.exec(html)) !== null) {
+        scorerTables.push(mScorer[1]);
     }
+
+    const parseScorerTable = (tableHtml) => {
+        const scorers = [];
+        const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+        let m;
+        while ((m = rowRe.exec(tableHtml)) !== null) {
+            const b = m[1];
+            const nameM = b.match(/href="[^"]*\/Futbolcu\/\d+\/[^"]*">\s*([^<]+?)\s*<\/a>/);
+            const goalsM = b.match(/<b>(\d+)<\/b>/);
+            if (nameM && goalsM) {
+                scorers.push({ name: nameM[1].trim(), goals: parseInt(goalsM[1], 10) });
+                if (scorers.length >= 3) break;
+            }
+        }
+        return scorers;
+    };
+
+    if (scorerTables.length > 0) result.homeScorers = parseScorerTable(scorerTables[0]);
+    if (scorerTables.length > 1) result.awayScorers = parseScorerTable(scorerTables[1]);
 
     return result;
 }
