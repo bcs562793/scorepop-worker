@@ -488,6 +488,7 @@ if (htStr.includes('-')) {
             penalty:   { home: null,      away: null      },
         },
         events:    [],
+        h2h: null,
         standings: [],
         stats:     initialStats,
         lineups: {
@@ -513,6 +514,7 @@ const EVENT_TYPE_MAP = {
 // ─── EVENTS + LINEUPS + STATS + STANDINGS ENRİCH ─────────────────────────────
 async function enrichMatchEvents(matches) {
     log(`\n🔍 Detaylar çekiliyor... ${matches.length} maç`);
+    let fetchedH2H = 0, failedH2H = 0;
 
     const eligible = matches.filter(m => !['NS', 'PST', 'CANC'].includes(m.fixture.status.short));
     log(`  📌 Uygun maç: ${eligible.length} | Concurrency: ${CONCURRENCY}`);
@@ -599,6 +601,15 @@ async function enrichMatchEvents(matches) {
             } else {
                 failedStand++;
             }
+            // ── 4. H2H ──────────────────────────────────────────────────────────────────
+            await sleep(EXTRA_DELAY + Math.floor(Math.random() * 400));
+            const h2hResult = await fetchMatchH2H(matchId);
+            if (h2hResult) {
+            match.h2h = h2hResult;
+            fetchedH2H++;
+            } else {
+            failedH2H++;
+            }
         }));
 
         if (i + CONCURRENCY < eligible.length) await randWait();
@@ -607,6 +618,7 @@ async function enrichMatchEvents(matches) {
     log(`  ✅ Events  → dolu: ${fetchedEvents} | boş: ${emptyEvents} | hata: ${failedDetails}`);
     log(`  ✅ Stats   → dolu: ${fetchedStats} | boş/hata: ${failedStats}`);
     log(`  ✅ Stands  → dolu: ${fetchedStand} | boş/hata: ${failedStand}`);
+    log(`  ✅ H2H    → dolu: ${fetchedH2H} | boş/hata: ${failedH2H}`);
     return matches;
 }
 
@@ -625,6 +637,132 @@ async function collectMatches(targetDate) {
 
     log(`  ✅ Parse: ${all.length} futbol | Bitmemiş atlandı: ${skipped} | Kaydedilecek: ${matches.length}`);
     return matches;
+}
+
+// ─── H2H ─────────────────────────────────────────────────────────────────────
+async function fetchMatchH2H(matchId) {
+    const url = `https://arsiv.mackolik.com/Match/Head2Head.aspx?id=${matchId}&s=1`;
+    try {
+        const raw = await httpGet(url, { 'Referer': `https://arsiv.mackolik.com/Mac/${matchId}/` });
+        return parseH2HHtml(raw);
+    } catch (e) {
+        logErr(`  ❌ H2H matchId=${matchId}: ${e.message}`);
+        return null;
+    }
+}
+
+function parseH2HHtml(html) {
+    const result = {
+        h2h:          [],
+        homeForm:     [],
+        awayForm:     [],
+        homeScorers:  [],
+        awayScorers:  [],
+    };
+
+    // ── 1. H2H SON 5 MAÇ ─────────────────────────────────────────────────────
+    const h2hTableM = html.match(/<table[^>]+class="md-table3"[^>]*>([\s\S]*?)<\/table>/);
+    if (h2hTableM) {
+        const rowRe = /<tr class="row alt[12]">([\s\S]*?)<\/tr>/g;
+        let row;
+        while ((row = rowRe.exec(h2hTableM[0])) !== null) {
+            const b = row[0];
+
+            // Skor linki — "v" ise gelecek maç, atla
+            const linkM = b.match(/href="[^"]*\/Mac\/(\d+)\/[^"]*"[^>]*><b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
+            if (!linkM) continue;
+
+            const matchId_  = parseInt(linkM[1], 10);
+            const homeGoals = parseInt(linkM[2], 10);
+            const awayGoals = parseInt(linkM[3], 10);
+
+            // Tarih (3. td)
+            const tds    = [...b.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)];
+            const dateRaw = tds[2] ? tds[2][1].replace(/<[^>]+>/g, '').trim() : '';
+
+            // Ev sahibi (align="right" td)
+            const homeM    = b.match(/align="right"[^>]*class="([^"]*)"[^>]*>[\s\S]*?(?:&nbsp;|<img[^>]*>)\s*([\s\S]*?)\s*<\/td>/);
+            const homeName  = homeM ? homeM[2].replace(/<[^>]+>/g, '').trim() : '';
+            const homeClass = homeM ? homeM[1] : '';
+
+            // Deplasman
+            const awayM   = b.match(/class="[^"]*away[^"]*"[^>]*>\s*([\s\S]*?)\s*(?:&nbsp;)?\s*<\/td>/);
+            const awayName = awayM ? awayM[1].replace(/<[^>]+>/g, '').trim() : '';
+
+            // İlk yarı
+            const htM    = b.match(/align="center">\s*(\d+)\s*-\s*(\d+)\s*<\/td>/);
+            const htHome = htM ? parseInt(htM[1], 10) : null;
+            const htAway = htM ? parseInt(htM[2], 10) : null;
+
+            // Kazanan
+            const homeWinner = homeClass.includes('winner') ? true
+                             : homeClass.includes('draw')   ? null : false;
+
+            result.h2h.push({
+                matchId:   matchId_,
+                date:      dateRaw,
+                homeTeam:  homeName,
+                awayTeam:  awayName,
+                homeGoals, awayGoals,
+                htHome,    htAway,
+                homeWinner,
+            });
+            if (result.h2h.length >= 5) break;
+        }
+    }
+
+    // ── 2. FORM (iki bölüm: ev - dep) ────────────────────────────────────────
+    const formDivRe = /<div class="md">([\s\S]*?Form Durumu[\s\S]*?)<\/div>/g;
+    let formDiv;
+    let formIdx = 0;
+    while ((formDiv = formDivRe.exec(html)) !== null && formIdx < 2) {
+        const sec    = formDiv[0];
+        const formRows = [];
+        const rowRe2 = /<tr class="row alt[12]">([\s\S]*?)<\/tr>/g;
+        let frow;
+        while ((frow = rowRe2.exec(sec)) !== null) {
+            const b = frow[0];
+            const imgM   = b.match(/img5\/(G|B|M)\.png/);
+            if (!imgM) continue; // gelecek maç
+            const scoreM = b.match(/<b>\s*(\d+)\s*-\s*(\d+)\s*<\/b>/);
+            if (!scoreM) continue;
+            const dateM  = b.match(/<td>\s*(\d{2}\.\d{2})\s*<\/td>/);
+            formRows.push({
+                date:      dateM   ? dateM[1]             : '',
+                homeGoals: parseInt(scoreM[1], 10),
+                awayGoals: parseInt(scoreM[2], 10),
+                result:    imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L',
+            });
+            if (formRows.length >= 10) break;
+        }
+        if (formIdx === 0) result.homeForm = formRows;
+        else               result.awayForm = formRows;
+        formIdx++;
+    }
+
+    // ── 3. EN GOLCÜLER (iki bölüm: ev - dep) ─────────────────────────────────
+    const scorerDivRe = /<div class="md"[^>]*>([\s\S]*?En Golc[üu]ler[\s\S]*?)<\/div>/g;
+    let scorerDiv;
+    let scorerIdx = 0;
+    while ((scorerDiv = scorerDivRe.exec(html)) !== null && scorerIdx < 2) {
+        const sec     = scorerDiv[0];
+        const scorers = [];
+        const rowRe3  = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+        let srow;
+        while ((srow = rowRe3.exec(sec)) !== null) {
+            const b     = srow[0];
+            const nameM  = b.match(/target="_blank"[^>]*>\s*([^<]+?)\s*<\/a>/);
+            const goalsM = b.match(/<b>(\d+)<\/b>/);
+            if (!nameM || !goalsM) continue;
+            scorers.push({ name: nameM[1].trim(), goals: parseInt(goalsM[1], 10) });
+            if (scorers.length >= 3) break;
+        }
+        if (scorerIdx === 0) result.homeScorers = scorers;
+        else                 result.awayScorers = scorers;
+        scorerIdx++;
+    }
+
+    return result;
 }
 
 // ─── FİRESTORE KAYDET ────────────────────────────────────────────────────────
@@ -671,6 +809,8 @@ async function saveToFirestore(db, dateStr, matches) {
     const withStats     = matches.filter(m => m.stats?.length    > 0).length;
     const withStandings = matches.filter(m => m.standings?.length > 0).length;
     const totalEvents   = matches.reduce((s, m) => s + (m.events?.length || 0), 0);
+    const withH2H       = matches.filter(m => m.h2h?.h2h?.length > 0).length;
+
 
     log(`\n  ✅ ${written}/${matches.length} maç → archive_matches/${dateStr}/fixtures/`);
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0, 6).join(' | ')}${leagues.length > 6 ? ` +${leagues.length - 6}` : ''}`);
@@ -679,6 +819,8 @@ async function saveToFirestore(db, dateStr, matches) {
     log(`  👕 Lineup:       ${withLineups}/${matches.length}`);
     log(`  📊 Stats:        ${withStats}/${matches.length}`);
     log(`  🏆 Standings:    ${withStandings}/${matches.length}`);
+    log(`  🔄 H2H:          ${withH2H}/${matches.length}`);
+
 }
 
 // ─── TEK GÜN İŞLE ────────────────────────────────────────────────────────────
