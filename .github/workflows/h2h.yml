@@ -28,4 +28,4 @@ jobs:
       #   run: npm install
 
       - name: 🚀 H2H Test Scriptini Çalıştır
-        run: node h2h_test.js ${{ github.event.inputs.matchId }}
+        run: node h2h.js ${{ github.event.inputs.matchId }}
