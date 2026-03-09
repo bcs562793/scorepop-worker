@@ -97,25 +97,29 @@ function parseH2HHtml(html) {
         const rowRe = /<tr[^>]*class="row alt[12]"[^>]*>([\s\S]*?)<\/tr>/g;
         let m;
         while ((m = rowRe.exec(tableHtml)) !== null) {
-            // Eski 'split' yerine 'matchAll' kullanıyoruz. Bu HTML bozukluklarına karşı çok daha dayanıklı.
             const tds = [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(t => t[1]);
             
-            // Eğer debug etmek istersen aşağıdaki satırı açabilirsin:
-            // console.log(`[DEBUG] ${teamType} Sütunları:`, tds.map(t => t.replace(/<[^>]+>/g, '').trim().substring(0, 10)));
-
             if (tds.length < 5) continue;
 
-            // İndeksler genelde şu şekildedir:
-            // tds[0]: Tarih (18.02 vb.)
-            // tds[1]: Ev Sahibi
-            // tds[2]: Skor (<b> 2 - 1 </b>)
-            // tds[3]: Deplasman
-            // tds[4]: Maç Sonucu İkonu (G/B/M)
+            // Tablodaki sütunların GERÇEK sırası:
+            // tds[0]: Lig (TSL, TÜK vb.)
+            // tds[1]: Tarih ve Ev Sahibi (Örn: "13.01\r\n\r\n  Gaziantep FK")
+            // tds[2]: Skor (Örn: <b> 2 - 1 </b>)
+            // tds[3]: Deplasman (Örn: "Kocaelispor")
+            // tds[4]: Sonuç İkonu (G/B/M)
 
-            let dateStr = tds[0].replace(/<[^>]+>/g, '').trim();
-            const homeTeam = tds[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim();
+            const league = tds[0].replace(/<[^>]+>/g, '').trim();
+            const rawDateAndHome = tds[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
+            
+            // 1. Tarihi regex ile bulup çekiyoruz (Örn: 13.01)
+            const dateMatch = rawDateAndHome.match(/(\d{2}\.\d{2})/);
+            const dateStr = dateMatch ? dateMatch[1] : '';
+            
+            // 2. Tarihi metinden siliyoruz, kalan tüm enter (\r\n) ve fazla boşlukları tek boşluğa çevirip Ev Sahibini buluyoruz
+            const homeTeam = rawDateAndHome.replace(dateStr, '').replace(/\s+/g, ' ').trim();
+            
             const scoreHtml = tds[2];
-            const awayTeam = tds[3].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim();
+            const awayTeam = tds[3].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
             const resultHtml = tds[4];
 
             const scoreM = scoreHtml.match(/<b>\s*(\d+)\s*-\s*(\d+)/);
@@ -125,6 +129,7 @@ function parseH2HHtml(html) {
             const resultVal = imgM ? (imgM[1] === 'G' ? 'W' : imgM[1] === 'B' ? 'D' : 'L') : '';
 
             rows.push({
+                league: league,
                 date: dateStr,
                 homeTeam: homeTeam,
                 score: `${scoreM[1]}-${scoreM[2]}`,
