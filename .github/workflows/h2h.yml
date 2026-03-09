@@ -1,0 +1,31 @@
+name: ScorePop H2H Test Runner
+
+# Bu ayar, eylemi GitHub arayüzünden manuel olarak tetiklemene olanak tanır.
+on:
+  workflow_dispatch:
+    inputs:
+      matchId:
+        description: 'Test edilecek Maç ID (Boş bırakılırsa default maç çalışır)'
+        required: false
+        default: '3662235'
+
+jobs:
+  run-h2h-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Repoyu Çek (Checkout)
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Node.js Kurulumu
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Güncel ve stabil bir Node versiyonu
+
+      # Eğer projenin ana dizininde bir package.json varsa ve firebase-admin gibi 
+      # modüller yüklenecekse bu adımı aktif edebilirsin (şu anki test dosyasında harici paket yok)
+      # - name: 📦 Bağımlılıkları Yükle (npm install)
+      #   run: npm install
+
+      - name: 🚀 H2H Test Scriptini Çalıştır
+        run: node h2h_test.js ${{ github.event.inputs.matchId }}
