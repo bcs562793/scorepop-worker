@@ -1,0 +1,96 @@
+name: 📅 ScorePop - Json botu
+
+on:
+  schedule:
+    - cron: '30 1 * * *'   # Her gece 04:30 TR saati (UTC+3)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mod'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - daily
+          - single
+          - backfill
+      date:
+        description: 'Tek gün → YYYY-MM-DD  (örn: 2026-03-19)'
+        required: false
+        default: ''
+        type: string
+      from_date:
+        description: 'Backfill başlangıç → YYYY-MM-DD'
+        required: false
+        default: ''
+        type: string
+      to_date:
+        description: 'Backfill bitiş → YYYY-MM-DD'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: write   # ← git push için şart
+
+    steps:
+      - name: 📥 Repo Çek
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # ← tam geçmiş, push conflict önler
+
+      - name: 🟢 Node.js 20 Kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 📦 Bağımlılıkları Yükle
+        run: npm install
+
+      # ── Otomatik ──────────────────────────────────────────────────────────
+      - name: 🤖 Otomatik — Dünü Çek
+        if: github.event_name == 'schedule'
+        run: node scraperjson.js --mode=daily
+
+      # ── Manuel ────────────────────────────────────────────────────────────
+      - name: 📅 Manuel — Dünü Çek
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'daily'
+        run: node scraperjson.js --mode=daily
+
+      - name: 🗓️ Manuel — Tek Gün
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'single'
+        run: node scraperjson.js --mode=single --date=${{ github.event.inputs.date }}
+
+      - name: 🕰️ Manuel — Backfill
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'backfill'
+        run: node scraperjson.js --mode=backfill --from=${{ github.event.inputs.from_date }} --to=${{ github.event.inputs.to_date }}
+
+      # ── JSON'ları commit et ve push'la ────────────────────────────────────
+      - name: 💾 JSON Dosyalarını Kaydet
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add data/
+
+          # Değişiklik yoksa sessizce çık
+          git diff --cached --quiet && echo "⏭️  Yeni veri yok, commit atlandı." && exit 0
+
+          COUNT=$(git diff --cached --name-only | wc -l)
+          git commit -m "🤖 arşiv: ${COUNT} dosya güncellendi ($(date -u '+%Y-%m-%d %H:%M UTC'))"
+          git push
+
+      # ── Log her zaman yükle ───────────────────────────────────────────────
+      - name: 📤 Log Yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-log-${{ github.run_id }}
+          path: scraper.log
+          if-no-files-found: warn
+          retention-days: 7
