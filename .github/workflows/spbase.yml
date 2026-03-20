@@ -1,4 +1,4 @@
-name: 🕰️ ScorePop – Geçmiş Veri Yükleme (Backfill)
+name: 🕰️ ScorePop – Geçmiş Veri Yükleme (Backfill) supabase
 on:
   workflow_dispatch:
     inputs:
