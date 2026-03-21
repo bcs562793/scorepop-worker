@@ -687,7 +687,7 @@ function parseH2HHtml(html) {
     return result;
 }
 
-// ─── JSON KAYDET ─────────────────────────────────────────────────────────────
+// ─── GZIP KAYDET ─────────────────────────────────────────────────────────────
 function saveToJSON(dateStr, matches) {
     // Klasör oluştur
     if (!fs.existsSync(OUT_DIR)) {
@@ -695,21 +695,14 @@ function saveToJSON(dateStr, matches) {
         log(`  📁 Klasör oluşturuldu: ${OUT_DIR}`);
     }
 
-    // ── Minified JSON (boşluksuz) ─────────────────────────────────────────
-    const jsonStr  = JSON.stringify(matches);   // pretty-print YOK → ~%30 küçük
-    const jsonBuf  = Buffer.from(jsonStr, 'utf8');
-    const jsonPath = path.join(OUT_DIR, `${dateStr}.json`);
-    fs.writeFileSync(jsonPath, jsonBuf);
-    const jsonKB = (jsonBuf.length / 1024).toFixed(1);
-
     // ── Gzip (.json.gz) ───────────────────────────────────────────────────
-    const gzBuf  = zlib.gzipSync(jsonBuf, { level: 9 });   // maks sıkıştırma
-    const gzPath = path.join(OUT_DIR, `${dateStr}.json.gz`);
+    const jsonBuf = Buffer.from(JSON.stringify(matches), 'utf8');
+    const gzBuf   = zlib.gzipSync(jsonBuf, { level: 9 });   // maks sıkıştırma
+    const gzPath  = path.join(OUT_DIR, `${dateStr}.json.gz`);
     fs.writeFileSync(gzPath, gzBuf);
-    const gzKB   = (gzBuf.length / 1024).toFixed(1);
-    const ratio  = ((1 - gzBuf.length / jsonBuf.length) * 100).toFixed(0);
+    const gzKB    = (gzBuf.length / 1024).toFixed(1);
+    const ratio   = ((1 - gzBuf.length / jsonBuf.length) * 100).toFixed(0);
 
-    log(`  💾 JSON : ${jsonPath} → ${jsonKB} KB`);
     log(`  🗜️  GZIP : ${gzPath}  → ${gzKB} KB  (%${ratio} küçüldü)`);
 
     // ── index.json — tarih listesi (manifest) ────────────────────────────
