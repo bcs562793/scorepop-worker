@@ -695,13 +695,24 @@ function saveToJSON(dateStr, matches) {
         log(`  📁 Klasör oluşturuldu: ${OUT_DIR}`);
     }
 
-    // Günlük JSON dosyası
-    const filePath = path.join(OUT_DIR, `${dateStr}.json`);
-    fs.writeFileSync(filePath, JSON.stringify(matches, null, 2), 'utf8');
-    const sizeKB = (fs.statSync(filePath).size / 1024).toFixed(1);
-    log(`  💾 ${filePath} yazıldı (${sizeKB} KB)`);
+    // ── Minified JSON (boşluksuz) ─────────────────────────────────────────
+    const jsonStr  = JSON.stringify(matches);   // pretty-print YOK → ~%30 küçük
+    const jsonBuf  = Buffer.from(jsonStr, 'utf8');
+    const jsonPath = path.join(OUT_DIR, `${dateStr}.json`);
+    fs.writeFileSync(jsonPath, jsonBuf);
+    const jsonKB = (jsonBuf.length / 1024).toFixed(1);
 
-    // index.json — mevcut tarihlerin listesi (manifest)
+    // ── Gzip (.json.gz) ───────────────────────────────────────────────────
+    const gzBuf  = zlib.gzipSync(jsonBuf, { level: 9 });   // maks sıkıştırma
+    const gzPath = path.join(OUT_DIR, `${dateStr}.json.gz`);
+    fs.writeFileSync(gzPath, gzBuf);
+    const gzKB   = (gzBuf.length / 1024).toFixed(1);
+    const ratio  = ((1 - gzBuf.length / jsonBuf.length) * 100).toFixed(0);
+
+    log(`  💾 JSON : ${jsonPath} → ${jsonKB} KB`);
+    log(`  🗜️  GZIP : ${gzPath}  → ${gzKB} KB  (%${ratio} küçüldü)`);
+
+    // ── index.json — tarih listesi (manifest) ────────────────────────────
     const indexPath = path.join(OUT_DIR, 'index.json');
     let index = { dates: [], last_updated: '' };
     if (fs.existsSync(indexPath)) {
@@ -712,16 +723,16 @@ function saveToJSON(dateStr, matches) {
         index.dates.sort().reverse();   // en yeni başta
     }
     index.last_updated = new Date().toISOString();
-    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), 'utf8');
+    fs.writeFileSync(indexPath, JSON.stringify(index), 'utf8');
 
-    // Özet log
+    // ── Özet log ─────────────────────────────────────────────────────────
     const withEvents    = matches.filter(m => m.events?.length   > 0).length;
     const withStats     = matches.filter(m => m.stats?.length    > 0).length;
     const withStandings = matches.filter(m => m.standings?.length > 0).length;
     const withH2H       = matches.filter(m => m.h2h?.h2h?.length > 0).length;
     const leagues       = [...new Set(matches.map(m => `${m.league.country}: ${m.league.name}`))];
 
-    log(`\n  ✅ ${matches.length} maç → ${filePath}`);
+    log(`\n  ✅ ${matches.length} maç kaydedildi`);
     log(`  📋 ${leagues.length} lig: ${leagues.slice(0, 5).join(' | ')}${leagues.length > 5 ? ` +${leagues.length - 5}` : ''}`);
     log(`  🎯 Events:    ${withEvents}/${matches.length}`);
     log(`  📊 Stats:     ${withStats}/${matches.length}`);
