@@ -91,76 +91,78 @@ function httpGet(url, extraHeaders = {}, maxRetry = 3) {
     return new Promise((resolve, reject) => {
         const RETRY_DELAYS = [2000, 5000, 10000];
 
-        const attempt = (tryNum) => {
+        const attempt = (tryNum, currentUrl) => {
             const options = {
                 headers: {
                     'User-Agent':      randUA(),
                     'Accept':          'text/html,application/json,*/*',
                     'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8',
-                    'Accept-Encoding': 'gzip, deflate',
+                    'Accept-Encoding': 'gzip, deflate, br',
                     'Connection':      'keep-alive',
                     ...extraHeaders,
                 }
             };
 
-            https.get(url, options, res => {
-                if (res.statusCode === 429) {
-                    const retryAfter = parseInt(res.headers['retry-after'] || '15', 10);
-                    const delay = Math.max(retryAfter * 1000, RETRY_DELAYS[tryNum - 1] || 15000);
-                    log(`  ⏳ 429 Rate-limit (${url.slice(0, 55)}...), ${delay}ms bekleniyor...`);
-                    if (tryNum < maxRetry) { setTimeout(() => attempt(tryNum + 1), delay); return; }
-                    reject(new Error(`429 rate-limit aşıldı: ${url}`)); return;
+            https.get(currentUrl, options, res => {
+                const { statusCode } = res;
+
+                if ([301, 302, 303, 307, 308].includes(statusCode)) {
+                    const location = res.headers['location'];
+                    if (!location) { reject(new Error(`Redirect ama Location yok: ${currentUrl}`)); return; }
+                    const redirectUrl = location.startsWith('http') ? location : new URL(location, currentUrl).href;
+                    log(`  ↩️  Redirect ${statusCode}: ${redirectUrl.slice(0, 60)}...`);
+                    attempt(tryNum, redirectUrl);
+                    return;
                 }
 
-                if (res.statusCode >= 500) {
-                    const delay = RETRY_DELAYS[tryNum - 1] || 5000;
-                    if (tryNum < maxRetry) {
-                        log(`  🔁 HTTP ${res.statusCode} (${url.slice(0, 55)}...), ${delay}ms retry ${tryNum}/${maxRetry}...`);
-                        setTimeout(() => attempt(tryNum + 1), delay);
-                        return;
-                    }
-                    reject(new Error(`HTTP ${res.statusCode}: ${url}`)); return;
+                if (statusCode === 404) { reject(new Error(`404 Not Found: ${currentUrl}`)); return; }
+
+                if (statusCode === 429) {
+                    const delay = Math.max(parseInt(res.headers['retry-after'] || '15', 10) * 1000, RETRY_DELAYS[tryNum - 1] || 15000);
+                    log(`  ⏳ 429 Rate-limit (${currentUrl.slice(0, 55)}...), ${delay}ms bekleniyor...`);
+                    if (tryNum < maxRetry) { setTimeout(() => attempt(tryNum + 1, currentUrl), delay); return; }
+                    reject(new Error(`429 rate-limit aşıldı: ${currentUrl}`)); return;
                 }
+
+                // ✅ DOĞRU SIRALAMA
+if (statusCode >= 500) {
+    const delay = RETRY_DELAYS[tryNum - 1] || 5000;
+    if (tryNum < maxRetry) {
+        log(`  🔁 HTTP ${statusCode} (${currentUrl.slice(0, 55)}...), ${delay}ms retry ${tryNum}/${maxRetry}...`);
+        setTimeout(() => attempt(tryNum + 1, currentUrl), delay);
+        return;
+    }
+    reject(new Error(`HTTP ${statusCode}: ${currentUrl}`)); return;
+}
+
+if (statusCode >= 400) { reject(new Error(`HTTP ${statusCode}: ${currentUrl}`)); return; }
 
                 const encoding = res.headers['content-encoding'] || '';
                 const chunks   = [];
-
                 res.on('data', chunk => chunks.push(chunk));
                 res.on('end', () => {
-                    const buf = Buffer.concat(chunks);
+                    const buf    = Buffer.concat(chunks);
+                    const decode = (err, decoded) => resolve(err ? buf.toString('utf8') : decoded.toString('utf8'));
 
-                    const decode = (err, decoded) => {
-                        if (err) { resolve(buf.toString('utf8')); }
-                        else     { resolve(decoded.toString('utf8')); }
-                    };
-
-                    if (encoding === 'gzip') {
-                        zlib.gunzip(buf, decode);
-                    } else if (encoding === 'deflate') {
-                        zlib.inflate(buf, (err, result) => {
-                            if (err) zlib.inflateRaw(buf, decode);
-                            else decode(null, result);
-                        });
-                    } else if (encoding === 'br') {
-                        zlib.brotliDecompress(buf, decode);
-                    } else {
-                        resolve(buf.toString('utf8'));
-                    }
+                    if      (encoding === 'gzip')    zlib.gunzip(buf, decode);
+                    else if (encoding === 'deflate')  zlib.inflate(buf, (err, r) => err ? zlib.inflateRaw(buf, decode) : decode(null, r));
+                    else if (encoding === 'br')       zlib.brotliDecompress(buf, decode);
+                    else    resolve(buf.toString('utf8'));
                 });
-
                 res.on('error', err => reject(err));
+
             }).on('error', err => {
                 const delay = RETRY_DELAYS[tryNum - 1] || 5000;
                 if (tryNum < maxRetry) {
                     log(`  🔁 Bağlantı hatası (${err.message}), ${delay}ms retry ${tryNum}/${maxRetry}...`);
-                    setTimeout(() => attempt(tryNum + 1), delay);
+                    setTimeout(() => attempt(tryNum + 1, currentUrl), delay);
                 } else {
                     reject(err);
                 }
             });
         };
 
-        attempt(1);
+        attempt(1, url);
     });
 }
 
