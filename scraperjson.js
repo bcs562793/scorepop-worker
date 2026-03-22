@@ -41,10 +41,10 @@ const MODE           = args.mode          || 'daily';
 const SINGLE         = args.date          || null;
 const FROM_DATE      = args.from          || null;
 const TO_DATE        = args.to            || null;
-const CONCURRENCY    = parseInt(args.concurrency  || '2',    10);
-const DELAY_MIN      = parseInt(args.delayMin      || '600',  10);
-const DELAY_MAX      = parseInt(args.delayMax      || '1400', 10);
-const EXTRA_DELAY    = parseInt(args.extraDelay    || '800',  10);
+const CONCURRENCY    = parseInt(args.concurrency  || '1',    10);   // ← 2'den 1'e düşürüldü
+const DELAY_MIN      = parseInt(args.delayMin      || '2000', 10);  // ← 600'den 2000'e
+const DELAY_MAX      = parseInt(args.delayMax      || '4000', 10);  // ← 1400'den 4000'e
+const EXTRA_DELAY    = parseInt(args.extraDelay    || '2000', 10);  // ← 800'den 2000'e
 const SKIP_STATS     = args.skipStats     === 'true';
 const SKIP_STANDINGS = args.skipStandings === 'true';
 const OUT_DIR        = args.outDir        || './data';
@@ -89,7 +89,7 @@ const randUA = () => UA_POOL[Math.floor(Math.random() * UA_POOL.length)];
 
 function httpGet(url, extraHeaders = {}, maxRetry = 3) {
     return new Promise((resolve, reject) => {
-        const RETRY_DELAYS = [2000, 5000, 10000];
+        const RETRY_DELAYS = [5000, 15000, 30000];   // ← 2000/5000/10000'den artırıldı
 
         const attempt = (tryNum, currentUrl) => {
             const options = {
@@ -124,18 +124,17 @@ function httpGet(url, extraHeaders = {}, maxRetry = 3) {
                     reject(new Error(`429 rate-limit aşıldı: ${currentUrl}`)); return;
                 }
 
-                // ✅ DOĞRU SIRALAMA
-if (statusCode >= 500) {
-    const delay = RETRY_DELAYS[tryNum - 1] || 5000;
-    if (tryNum < maxRetry) {
-        log(`  🔁 HTTP ${statusCode} (${currentUrl.slice(0, 55)}...), ${delay}ms retry ${tryNum}/${maxRetry}...`);
-        setTimeout(() => attempt(tryNum + 1, currentUrl), delay);
-        return;
-    }
-    reject(new Error(`HTTP ${statusCode}: ${currentUrl}`)); return;
-}
+                if (statusCode >= 500) {
+                    const delay = RETRY_DELAYS[tryNum - 1] || 5000;
+                    if (tryNum < maxRetry) {
+                        log(`  🔁 HTTP ${statusCode} (${currentUrl.slice(0, 55)}...), ${delay}ms retry ${tryNum}/${maxRetry}...`);
+                        setTimeout(() => attempt(tryNum + 1, currentUrl), delay);
+                        return;
+                    }
+                    reject(new Error(`HTTP ${statusCode}: ${currentUrl}`)); return;
+                }
 
-if (statusCode >= 400) { reject(new Error(`HTTP ${statusCode}: ${currentUrl}`)); return; }
+                if (statusCode >= 400) { reject(new Error(`HTTP ${statusCode}: ${currentUrl}`)); return; }
 
                 const encoding = res.headers['content-encoding'] || '';
                 const chunks   = [];
