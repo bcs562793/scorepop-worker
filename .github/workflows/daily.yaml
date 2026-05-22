@@ -1,6 +1,8 @@
 name: 📅 ScorePop - Maç Çekme Botu
 
-
+on:
+  schedule:
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -32,7 +34,6 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 350
-
     steps:
       - name: 📥 Repo Çek
         uses: actions/checkout@v4
@@ -48,14 +49,12 @@ jobs:
       - name: 🖥️ Chrome Kur
         run: npx puppeteer browsers install chrome --install-deps
 
-      # ── Otomatik ──────────────────────────────────────────────────────────
       - name: 🤖 Otomatik — Dünü Çek
         if: github.event_name == 'schedule'
         run: node scraper.js --mode=daily
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
-      # ── Manuel ────────────────────────────────────────────────────────────
       - name: 📅 Manuel — Dünü Çek
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'daily'
         run: node scraper.js --mode=daily
@@ -74,12 +73,11 @@ jobs:
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
-      # ── Log her zaman yükle (başarılı veya başarısız) ─────────────────────
       - name: 📤 Log Yükle
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scraper-log-${{ github.run_id }}
-          path: scraper.log   # ← *.log yerine tam isim, bulunamazsa hata vermez
+          path: scraper.log
           if-no-files-found: warn
           retention-days: 7
