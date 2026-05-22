@@ -195,5 +195,53 @@ def main():
         print(json.dumps(enriched, ensure_ascii=False, indent=2))
 
 
+def test_stream(sbs_id: int):
+    """
+    Tek bir maçın HLS URL'sini uçtan uca test et.
+    Kullanım: python fetch_streams.py test 2886455
+    """
+    print(f"\n🧪 Stream testi: sbsEventId={sbs_id}")
+
+    # Adım 1: Bilyoner auth
+    auth = fetch_auth_url(sbs_id)
+    if not auth:
+        print("❌ Auth URL alınamadı")
+        return
+
+    auth_url = auth["authUrl"]
+    print(f"  ✅ Auth URL: {auth_url[:80]}...")
+
+    # Adım 2: Perform → HLS URL
+    import urllib.request
+    ctx = ssl.create_default_context()
+    try:
+        req = urllib.request.Request(auth_url, headers={"Accept": "application/json"})
+        resp = urllib.request.urlopen(req, context=ctx, timeout=15)
+        data = json.loads(resp.read())
+    except Exception as e:
+        print(f"  ❌ Perform isteği başarısız: {e}")
+        return
+
+    launchers = data.get("launchInfo", {}).get("streamLauncher", [])
+    if not launchers:
+        print("  ❌ streamLauncher boş:", json.dumps(data, ensure_ascii=False)[:300])
+        return
+
+    print(f"\n✅ {len(launchers)} stream kalitesi:")
+    for s in launchers:
+        alias = s.get("playerAlias", "?")
+        url   = s.get("launcherURL", "")
+        print(f"\n  [{alias}]")
+        print(f"  {url}")
+
+    print("\n📱 VLC'de test: vlc '<url_yukari>'")
+    print("🌐 Browser'da test: https://hls-js.netlify.app/demo/ → URL yapıştır")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) >= 3 and sys.argv[1] == "test":
+        sbs_id = int(sys.argv[2])
+        test_stream(sbs_id)
+    else:
+        main()
