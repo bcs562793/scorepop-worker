@@ -82,8 +82,12 @@ def fetch_live_matches(sport: str = "basketball") -> list[dict]:
             stream_type = evt.get("streamType", "NONE")
             status      = evt.get("matchStatus", {}).get("type", "")
 
-            # Sadece canlı maçlar — FIXTURE henüz yayın başlamadı
-            if status not in ("LIVE",):
+            # Canlı maçlar: status veya isLive bayrağı
+            is_live = (
+                status in ("LIVE", "INPLAY", "HALFTIME", "Q1", "Q2", "Q3", "Q4", "HT", "Playing", "1H", "2H", "ET")
+                or str(evt.get("isLive", 0)) == "1"
+            )
+            if not is_live:
                 continue
             if stream_type == "NONE" or not sbs_id:
                 continue
@@ -97,7 +101,7 @@ def fetch_live_matches(sport: str = "basketball") -> list[dict]:
                 "competitionName": comp.get("title"),
             })
             print(f"  📺 {evt.get('homeTeam')} vs {evt.get('awayTeam')} "
-                  f"[{stream_type}] — {status}")
+                  f"[{stream_type}] — status={status} isLive={evt.get('isLive',0)}")
 
     return streamable
 
@@ -176,6 +180,29 @@ def main():
     if not all_matches:
         print("\n✅ Şu an canlı yayınlanacak maç yok")
         print("   (FIXTURE maçlar henüz başlamadı — maç başlayınca URL gelir)")
+        # Debug: kaç tane stream var ama canlı değil?
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000")
+        for sport in ["basketball", "soccer"]:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{BILYONER_BASE}/live-score/event/v2/{sport}?date={today}",
+                headers=BILYONER_HEADERS)
+            try:
+                data = json.loads(urllib.request.urlopen(req, context=ctx, timeout=10).read())
+                stream_counts = {}
+                for comp in data.get("competitions", []):
+                    for evt in comp.get("events", []):
+                        st = evt.get("streamType", "NONE")
+                        ms = evt.get("matchStatus", {})
+                        status = ms.get("type", str(ms)) if isinstance(ms, dict) else str(ms)
+                        if st != "NONE":
+                            key = f"{status}/isLive={evt.get('isLive',0)}"
+                            stream_counts[key] = stream_counts.get(key, 0) + 1
+                if stream_counts:
+                    print(f"  [{sport}] Stream olan maçlar (durum/isLive): {stream_counts}")
+            except Exception as e:
+                print(f"  [{sport}] Debug sorgusu başarısız: {e}")
         return
 
     print(f"\n🔗 {len(all_matches)} maç için auth URL çekiliyor...")
