@@ -2,7 +2,7 @@
 fetch_streams.py — Canlı maçların yayın URL'lerini Bilyoner'den çekip
                    Supabase'e kaydeder.
 
-GitHub Actions'ta 10 dakikada bir çalışır.
+GitHub Actions'ta 10 dakikada bir çalışır
 Ortam değişkenleri:
   BILYONER_ACCESS_TOKEN  — Bilyoner X-Auth-Token
   SUPABASE_URL           — Supabase proje URL'si
