@@ -2,7 +2,7 @@
 fetch_streams.py — Canlı maçların yayın URL'lerini Bilyoner'den çekip
                    Supabase'e kaydeder.
 
-GitHub Actions'ta 10 dakikada bir çalışır
+GitHub Actions'ta 10 dakikada bir çalışır.
 Ortam değişkenleri:
   BILYONER_ACCESS_TOKEN  — Bilyoner X-Auth-Token
   SUPABASE_URL           — Supabase proje URL'si
@@ -214,6 +214,12 @@ def main():
             enriched.append({**m, **auth})
         time.sleep(0.3)  # Rate limit
 
+    # Hangi maçların URL'si var, hangisi yok — tam liste
+    print(f"\n=== SONUÇ ===")
+    for m in all_matches:
+        found = any(e["sbsEventId"] == m["sbsEventId"] for e in enriched)
+        icon = "✅" if found else "❌"
+        print(f"  {icon} {m['sbsEventId']} | {m['homeTeam']} vs {m['awayTeam']} | {m['matchStatus']}")
     print(f"\n✅ {len(enriched)} stream URL hazır")
 
     if SUPABASE_URL and enriched:
