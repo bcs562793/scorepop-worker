@@ -1,0 +1,36 @@
+name: 📺 Bilyoner Live Stream URLs
+
+on:
+  schedule:
+    # Maç saatlerinde 10 dakikada bir — 16:00-24:00 UTC (19:00-03:00 TR)
+    - cron: '*/10 13-23 * * *'
+    - cron: '*/10 0-1 * * *'
+
+  workflow_dispatch:
+    inputs:
+      sport:
+        description: 'Spor (basketball/soccer/all)'
+        default: 'all'
+
+env:
+  PYTHON_VERSION: '3.11'
+  PLATFORM_TOKEN: '40CAB7292CD83F7EE0631FC35A0AFC75'
+
+jobs:
+  fetch_streams:
+    name: 📺 Stream URL'lerini Çek
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Stream URL'leri çek ve Supabase'e kaydet
+        env:
+          BILYONER_ACCESS_TOKEN: ${{ secrets.BILYONER_ACCESS_TOKEN }}
+          SUPABASE_URL:          ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:  ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PLATFORM_TOKEN:        ${{ env.PLATFORM_TOKEN }}
+        run: python fetch_streams.py
