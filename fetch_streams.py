@@ -82,8 +82,8 @@ def fetch_live_matches(sport: str = "basketball") -> list[dict]:
             stream_type = evt.get("streamType", "NONE")
             status      = evt.get("matchStatus", {}).get("type", "")
 
-            # Sadece canlı veya başlamak üzere olan maçlar
-            if status not in ("LIVE", "FIXTURE"):
+            # Sadece canlı maçlar — FIXTURE henüz yayın başlamadı
+            if status not in ("LIVE",):
                 continue
             if stream_type == "NONE" or not sbs_id:
                 continue
@@ -174,7 +174,8 @@ def main():
             print("  Yayınlanabilir maç yok")
 
     if not all_matches:
-        print("\n✅ Yayınlanacak maç yok")
+        print("\n✅ Şu an canlı yayınlanacak maç yok")
+        print("   (FIXTURE maçlar henüz başlamadı — maç başlayınca URL gelir)")
         return
 
     print(f"\n🔗 {len(all_matches)} maç için auth URL çekiliyor...")
