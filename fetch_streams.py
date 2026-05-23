@@ -1,149 +1,398 @@
 """
-stream_manager.py — Supabase'deki stream URL'lerini okuyup
-                    ffmpeg ile EC2'ye relay eder.
+fetch_streams.py — Canlı maçların yayın URL'lerini Bilyoner'den çekip
+                   Supabase'e kaydeder.
 
-Bilyoner token'a gerek YOK — URL'ler GitHub Actions tarafından
-Supabase'e yazılır, bu script sadece ffmpeg yönetir.
-
+GitHub Actions'ta 10 dakikada bir çalışır.
 Ortam değişkenleri:
-  SUPABASE_URL
-  SUPABASE_SERVICE_KEY
-  SERVER_IP  (opsiyonel, varsayılan: 13.48.55.242)
+  BILYONER_ACCESS_TOKEN  — Bilyoner X-Auth-Token
+  SUPABASE_URL           — Supabase proje URL'si
+  SUPABASE_SERVICE_KEY   — Supabase service_role key (RLS bypass için)
 """
 
-import os, json, time, subprocess, signal
-import urllib.request, ssl
-from datetime import datetime, timezone
+import os, json, time, uuid
+import urllib.request, urllib.error, ssl
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
-SERVER_IP    = os.environ.get("SERVER_IP", "13.48.55.242")
-HLS_DIR      = "/var/www/hls"
-ctx          = ssl.create_default_context()
+# ─── Sabitler ─────────────────────────────────────────────────────
+BILYONER_BASE    = "https://www.bilyoner.com/api/mobile"
+PLATFORM_TOKEN   = "40CAB7292CD83F7EE0631FC35A0AFC75"
+DEVICE_ID        = os.environ.get("BILYONER_DEVICE_ID",
+                                  "6949B800-5EB1-4661-9E28-B54A11AA99AA")
+APP_VERSION      = "3.99.1"
+ACCESS_TOKEN     = os.environ.get("BILYONER_ACCESS_TOKEN", "")
+SUPABASE_URL     = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY     = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
-# Çalışan ffmpeg prosesleri: {sbs_event_id: Popen}
-active: dict[int, subprocess.Popen] = {}
+ctx = ssl.create_default_context()
 
-
-def supabase_get() -> list[dict]:
-    """Supabase'den aktif stream URL'lerini çek."""
-    url = f"{SUPABASE_URL}/rest/v1/live_stream_urls?select=*"
-    req = urllib.request.Request(url, headers={
-        "apikey":        SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Accept":        "application/json",
-    })
+def _my_ip() -> str:
     try:
-        resp = urllib.request.urlopen(req, context=ctx, timeout=10)
+        import urllib.request as _r
+        return _r.urlopen("https://api.ipify.org", context=ctx, timeout=5).read().decode().strip()
+    except:
+        return ""
+
+_CLIENT_IP = _my_ip()
+
+BILYONER_HEADERS = {
+    "X-Auth-Token":             ACCESS_TOKEN,
+    "PLATFORM-TOKEN":           PLATFORM_TOKEN,
+    "X-DEVICE-ID":              DEVICE_ID,
+    "X-CLIENT-CHANNEL":         "WEB",
+    "X-CLIENT-APP-VERSION":     APP_VERSION,
+    "X-CLIENT-BROWSER-VERSION": "Chrome / v148.0.0.0",
+    "Accept":                   "application/json",
+    **({"clientIp": _CLIENT_IP} if _CLIENT_IP else {}),
+}
+
+
+def get(url: str, extra_headers: dict = {}) -> dict:
+    req = urllib.request.Request(url, headers={**BILYONER_HEADERS, **extra_headers})
+    try:
+        resp = urllib.request.urlopen(req, context=ctx, timeout=15)
         return json.loads(resp.read())
     except Exception as e:
-        print(f"  Supabase okuma hata: {e}")
-        return []
+        print(f"  ⚠️  GET {url[:80]}: {e}")
+        return {}
 
 
-def supabase_update_relay_url(sbs_id: int, relay_url: str):
-    """Relay URL'yi Supabase'e güncelle."""
-    url  = f"{SUPABASE_URL}/rest/v1/live_stream_urls?sbs_event_id=eq.{sbs_id}"
-    data = json.dumps({"relay_url": relay_url}).encode()
-    req  = urllib.request.Request(url, data=data, method="PATCH", headers={
-        "apikey":        SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type":  "application/json",
-    })
+def supabase_upsert(table: str, rows: list[dict]):
+    """Supabase REST API ile upsert."""
+    if not SUPABASE_URL or not SUPABASE_KEY or not rows:
+        return
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    data = json.dumps(rows).encode()
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={
+            "apikey":        SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type":  "application/json",
+            "Prefer":        "resolution=merge-duplicates",
+        }
+    )
     try:
         urllib.request.urlopen(req, context=ctx, timeout=10)
     except Exception as e:
-        print(f"  Supabase update hata: {e}")
+        print(f"  ⚠️  Supabase upsert {table}: {e}")
 
 
-def start_ffmpeg(sbs_id: int, src_url: str, home: str, away: str) -> bool:
-    out_m3u8 = f"{HLS_DIR}/stream_{sbs_id}.m3u8"
-    out_seg  = f"{HLS_DIR}/stream_{sbs_id}_%d.ts"
+# ─── ADIM 1: Bugünkü canlı maçları çek ───────────────────────────
+def fetch_live_matches(sport: str = "basketball") -> list[dict]:
+    """
+    /live-score/event/v2/{sport}?date=today
+    streamType != 'NONE' olanları filtrele
+    """
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000")
+    data = get(f"{BILYONER_BASE}/live-score/event/v2/{sport}?date={today}")
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", src_url,
-        "-c", "copy",
-        "-f", "hls",
-        "-hls_time", "2",
-        "-hls_list_size", "5",
-        "-hls_flags", "delete_segments+append_list",
-        "-hls_segment_filename", out_seg,
-        out_m3u8
-    ]
+    streamable = []
+    for comp in data.get("competitions", []):
+        for evt in comp.get("events", []):
+            sbs_id     = evt.get("sbsEventId")
+            stream_type = evt.get("streamType", "NONE")
+            status      = evt.get("matchStatus", {}).get("type", "")
 
-    log = open(f"/tmp/stream_{sbs_id}.log", "w")
-    proc = subprocess.Popen(cmd, stdout=log, stderr=log)
-    active[sbs_id] = proc
-    relay_url = f"http://{SERVER_IP}/hls/stream_{sbs_id}.m3u8"
-    print(f"  ✅ {home} vs {away} → {relay_url}")
+            # Canlı maçlar: status veya isLive bayrağı
+            is_live = (
+                status in ("LIVE", "INPLAY", "HALFTIME", "Q1", "Q2", "Q3", "Q4", "HT", "Playing", "1H", "2H", "ET")
+                or str(evt.get("isLive", 0)) == "1"
+            )
+            if not is_live:
+                continue
+            if stream_type == "NONE" or not sbs_id:
+                continue
 
-    time.sleep(3)  # ilk segmentlerin yazılmasını bekle
+            streamable.append({
+                "sbsEventId":   sbs_id,
+                "homeTeam":     evt.get("homeTeam"),
+                "awayTeam":     evt.get("awayTeam"),
+                "matchStatus":  status,
+                "streamType":   stream_type,
+                "competitionName": comp.get("title"),
+            })
+            print(f"  📺 {evt.get('homeTeam')} vs {evt.get('awayTeam')} "
+                  f"[{stream_type}] — status={status} isLive={evt.get('isLive',0)}")
 
-    # Supabase'e relay URL'yi güncelle
-    supabase_update_relay_url(sbs_id, relay_url)
-    return True
+    return streamable
 
 
-def stop_ffmpeg(sbs_id: int):
-    proc = active.pop(sbs_id, None)
-    if proc:
-        proc.send_signal(signal.SIGTERM)
+# ─── ADIM 2: Bilyoner auth URL'sini al ───────────────────────────
+def fetch_auth_url(sbs_id: int) -> dict | None:
+    """
+    GET /api/mobile/live-stream/perform/authentication/{sbsEventId}/v3
+         ?externalCustomerId={uuid}
+    → authenticationUrl (IP bağımsız, Perform endpoint'i)
+    → performAuthenticationToken
+    """
+    ext_id = str(uuid.uuid4())
+    url = (f"{BILYONER_BASE}/live-stream/perform/authentication"
+           f"/{sbs_id}/v3?externalCustomerId={ext_id}")
+    data = get(url)
+
+    result = data.get("authenticationResult", {})
+    auth_url = result.get("authenticationUrl")
+    if not auth_url:
+        print(f"    ❌ {sbs_id}: authenticationUrl yok")
+        return None
+
+    print(f"    ✅ Auth URL alındı: {auth_url[:60]}...")
+    return {
+        "authUrl":  auth_url,
+        "perfToken": result.get("performAuthenticationToken", ""),
+    }
+
+
+# ─── ADIM 3: Supabase'e kaydet ────────────────────────────────────
+PERFORM_HDRS = {
+    "Referer":     "https://www.bilyoner.com/",
+    "pf-hostpage": "https://www.bilyoner.com",
+    "Accept":      "application/json",
+}
+
+def extract_hdntl_url(hls_url: str) -> str | None:
+    """
+    IP-kilitli hdnea URL'den m3u8'i çek,
+    içindeki IP-kilitsiz hdntl URL'yi döndür.
+    """
+    try:
+        req  = urllib.request.Request(hls_url)
+        resp = urllib.request.urlopen(req, context=ctx, timeout=15)
+        m3u8 = resp.read().decode("utf-8", errors="replace")
+
+        # Base URL (hdntl path'lerin önüne gelecek)
+        from urllib.parse import urlparse
+        p    = urlparse(hls_url)
+        base = f"{p.scheme}://{p.netloc}{'/'.join(p.path.split('/')[:-1])}/"
+
+        # m3u8'deki hdntl satırını bul
+        for line in m3u8.splitlines():
+            line = line.strip()
+            if line.startswith("hdntl=") and "playlist" in line:
+                full = base + line
+                print(f"    ✅ hdntl URL (IP-kilitsiz, 24h): {full[:80]}...")
+                return full
+    except Exception as e:
+        print(f"    ⚠️  m3u8 parse hatası: {e}")
+    return None
+
+
+def get_universal_stream_url(auth_result: dict) -> str | None:
+    """
+    Sağlayıcıya göre hdntl tabanlı evrensel HLS URL al.
+    """
+    provider = auth_result.get("provider", "PERFORM")
+    auth_url = auth_result.get("authUrl", "")
+
+    if provider == "PERFORM":
+        # Perform: authUrl → Perform launch → hdnea HLS → hdntl parse
         try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        print(f"  🛑 {sbs_id} relay durduruldu")
+            perf = get(auth_url, PERFORM_HDRS)
+            launchers = perf["launchInfo"]["streamLauncher"]
+            best = next((s for s in launchers if "med" in s["playerAlias"]), launchers[0])
+            hls_url = best["launcherURL"]
+            return extract_hdntl_url(hls_url)
+        except Exception as e:
+            print(f"    ⚠️  Perform HLS hatası: {e}")
+            return None
+
+    elif provider == "IMG":
+        # IMG Arena: authUrl → IMG launch → hdnea HLS → hdntl parse
+        try:
+            img = get(auth_url, {"Accept": "application/json"})
+            hls_url = img.get("hlsUrl", "")
+            return extract_hdntl_url(hls_url)
+        except Exception as e:
+            print(f"    ⚠️  IMG HLS hatası: {e}")
+            return None
+
+    return None
 
 
-def run_once():
-    now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    print(f"\n[{now}] Supabase'den stream listesi alınıyor...")
+EC2_API     = os.environ.get("EC2_API_URL", "http://13.48.55.242:5000")
+EC2_SECRET  = os.environ.get("EC2_API_SECRET", "bilyoner123")
 
-    rows = supabase_get()
-    if not rows:
-        print("  Supabase'de stream yok")
-        # Aktif prosesleri durdur
-        for sid in list(active.keys()):
-            stop_ffmpeg(sid)
+def send_to_ec2(match: dict) -> str | None:
+    """HLS URL'yi EC2 API'ye gönder, relay URL'yi al."""
+    payload = json.dumps({
+        "sbsEventId": match["sbsEventId"],
+        "hlsUrl":     match["authUrl"],
+        "homeTeam":   match.get("homeTeam",""),
+        "awayTeam":   match.get("awayTeam",""),
+    }).encode()
+    req = urllib.request.Request(
+        f"{EC2_API}/start",
+        data=payload,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Secret":     EC2_SECRET,
+        }
+    )
+    try:
+        resp = urllib.request.urlopen(req, context=ctx, timeout=20)
+        data = json.loads(resp.read())
+        relay = data.get("relay")
+        print(f"    ✅ EC2 relay: {relay}")
+        return relay
+    except Exception as e:
+        print(f"    ❌ EC2 API hatası: {e}")
+        return None
+
+
+def save_to_supabase(matches_with_auth: list[dict]):
+    """
+    live_bball tablosuna stream_auth_url ve stream_type ekle.
+    nesine_bid yerine sbs_event_id ile eşleştir.
+
+    Tablo sütunları eklenmeli (migration):
+      ALTER TABLE live_bball ADD COLUMN IF NOT EXISTS stream_auth_url TEXT;
+      ALTER TABLE live_bball ADD COLUMN IF NOT EXISTS stream_type TEXT;
+      ALTER TABLE live_bball ADD COLUMN IF NOT EXISTS stream_fetched_at TIMESTAMPTZ;
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    rows = []
+    for m in matches_with_auth:
+        print(f"  🎬 {m['homeTeam']} vs {m['awayTeam']} için hdntl URL çekiliyor...")
+        hdntl_url = get_universal_stream_url(m)
+        if not hdntl_url:
+            print(f"    ⚠️  hdntl URL alınamadı, atlanıyor")
+            continue
+        rows.append({
+            "sbs_event_id":    m["sbsEventId"],
+            "stream_url":      hdntl_url,        # IP-kilitsiz hdntl URL
+            "stream_provider": m.get("provider", "PERFORM"),
+            "stream_img_id":   m.get("imgId"),
+            "home_team":       m.get("homeTeam"),
+            "away_team":       m.get("awayTeam"),
+            "competition_name":m.get("competitionName"),
+            "match_status":    m.get("matchStatus"),
+            "stream_fetched_at": now,
+        })
+
+    # live_stream_urls tablosuna yaz (daha temiz ayrım)
+    supabase_upsert("live_stream_urls", rows)
+    print(f"  💾 {len(rows)} stream URL Supabase'e kaydedildi")
+
+
+# ─── ANA AKIŞ ─────────────────────────────────────────────────────
+def main():
+    if not ACCESS_TOKEN:
+        print("❌ BILYONER_ACCESS_TOKEN eksik")
         return
 
-    current_ids = {int(r["sbs_event_id"]) for r in rows if r.get("stream_url")}
-    print(f"  Supabase'de {len(current_ids)} stream var")
+    print("\n📺 Canlı yayın URL'leri çekiliyor...")
 
-    # Yeni stream'leri başlat
-    for row in rows:
-        sbs_id = int(row["sbs_event_id"])
-        src    = row.get("stream_url", "")
-        if not src:
-            continue
+    # Basketbol ve futbol için paralel çek
+    all_matches = []
+    for sport in ["basketball", "soccer"]:
+        print(f"\n[{sport.upper()}]")
+        matches = fetch_live_matches(sport)
+        all_matches.extend(matches)
+        if not matches:
+            print("  Yayınlanabilir maç yok")
 
-        if sbs_id in active:
-            # Hâlâ çalışıyor mu?
-            if active[sbs_id].poll() is None:
-                continue
-            else:
-                print(f"  ⚠️  {sbs_id} crash etmiş, yeniden başlatılıyor")
-                active.pop(sbs_id)
+    if not all_matches:
+        print("\n✅ Şu an canlı yayınlanacak maç yok")
+        print("   (FIXTURE maçlar henüz başlamadı — maç başlayınca URL gelir)")
+        # Debug: kaç tane stream var ama canlı değil?
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000")
+        for sport in ["basketball", "soccer"]:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{BILYONER_BASE}/live-score/event/v2/{sport}?date={today}",
+                headers=BILYONER_HEADERS)
+            try:
+                data = json.loads(urllib.request.urlopen(req, context=ctx, timeout=10).read())
+                stream_counts = {}
+                for comp in data.get("competitions", []):
+                    for evt in comp.get("events", []):
+                        st = evt.get("streamType", "NONE")
+                        ms = evt.get("matchStatus", {})
+                        status = ms.get("type", str(ms)) if isinstance(ms, dict) else str(ms)
+                        if st != "NONE":
+                            key = f"{status}/isLive={evt.get('isLive',0)}"
+                            stream_counts[key] = stream_counts.get(key, 0) + 1
+                if stream_counts:
+                    print(f"  [{sport}] Stream olan maçlar (durum/isLive): {stream_counts}")
+            except Exception as e:
+                print(f"  [{sport}] Debug sorgusu başarısız: {e}")
+        return
 
-        print(f"  🎬 Başlatılıyor: {row.get('home_team')} vs {row.get('away_team')}")
-        start_ffmpeg(sbs_id, src,
-                     row.get("home_team","?"),
-                     row.get("away_team","?"))
+    print(f"\n🔗 {len(all_matches)} maç için auth URL çekiliyor...")
+    enriched = []
+    for m in all_matches:
+        sbs_id = m["sbsEventId"]
+        auth = fetch_auth_url(sbs_id)
+        if auth:
+            enriched.append({**m, **auth})
+        time.sleep(0.3)  # Rate limit
 
-    # Bitenleri durdur
-    ended = [sid for sid in list(active.keys()) if sid not in current_ids]
-    for sid in ended:
-        stop_ffmpeg(sid)
+    # Hangi maçların URL'si var, hangisi yok — tam liste
+    print(f"\n=== SONUÇ ===")
+    for m in all_matches:
+        found = any(e["sbsEventId"] == m["sbsEventId"] for e in enriched)
+        icon = "✅" if found else "❌"
+        print(f"  {icon} {m['sbsEventId']} | {m['homeTeam']} vs {m['awayTeam']} | {m['matchStatus']}")
+    print(f"\n✅ {len(enriched)} stream URL hazır")
 
-    print(f"  Aktif relay: {len(active)} stream")
+    if SUPABASE_URL and enriched:
+        save_to_supabase(enriched)
+    else:
+        # Lokal test için stdout'a yaz
+        print(json.dumps(enriched, ensure_ascii=False, indent=2))
+
+
+def test_stream(sbs_id: int):
+    """
+    Tek bir maçın HLS URL'sini uçtan uca test et.
+    Kullanım: python fetch_streams.py test 2886455
+    """
+    print(f"\n🧪 Stream testi: sbsEventId={sbs_id}")
+
+    # Adım 1: Bilyoner auth
+    auth = fetch_auth_url(sbs_id)
+    if not auth:
+        print("❌ Auth URL alınamadı")
+        return
+
+    auth_url = auth["authUrl"]
+    print(f"  ✅ Auth URL: {auth_url[:80]}...")
+
+    # Adım 2: Perform → HLS URL
+    import urllib.request
+    ctx = ssl.create_default_context()
+    try:
+        req = urllib.request.Request(auth_url, headers={"Accept": "application/json"})
+        resp = urllib.request.urlopen(req, context=ctx, timeout=15)
+        data = json.loads(resp.read())
+    except Exception as e:
+        print(f"  ❌ Perform isteği başarısız: {e}")
+        return
+
+    launchers = data.get("launchInfo", {}).get("streamLauncher", [])
+    if not launchers:
+        print("  ❌ streamLauncher boş:", json.dumps(data, ensure_ascii=False)[:300])
+        return
+
+    print(f"\n✅ {len(launchers)} stream kalitesi:")
+    for s in launchers:
+        alias = s.get("playerAlias", "?")
+        url   = s.get("launcherURL", "")
+        print(f"\n  [{alias}]")
+        print(f"  {url}")
+
+    print("\n📱 VLC'de test: vlc '<url_yukari>'")
+    print("🌐 Browser'da test: https://hls-js.netlify.app/demo/ → URL yapıştır")
 
 
 if __name__ == "__main__":
-    print(f"🚀 Stream Manager başlatıldı → http://{SERVER_IP}/hls/")
-    while True:
-        try:
-            run_once()
-        except Exception as e:
-            print(f"  ❌ Hata: {e}")
-        time.sleep(30)
+    import sys
+    if len(sys.argv) >= 3 and sys.argv[1] == "test":
+        sbs_id = int(sys.argv[2])
+        test_stream(sbs_id)
+    else:
+        main()
