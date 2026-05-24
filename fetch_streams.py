@@ -35,7 +35,7 @@ def _ip():
     except:
         return ""
 
-CLIENT_IP = _ip()
+CLIENT_IP = os.environ.get("CLIENT_IP") or _ip()
 print(f"🌐 IP: {CLIENT_IP}")
 
 HDRS = {
