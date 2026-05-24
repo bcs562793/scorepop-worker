@@ -27,10 +27,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Stream URL'leri çek ve Supabase'e kaydet
+      - name: Stream URL'lerini çek
         env:
           BILYONER_ACCESS_TOKEN: ${{ secrets.BILYONER_ACCESS_TOKEN }}
           SUPABASE_URL:          ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY:  ${{ secrets.SUPABASE_SERVICE_KEY }}
-          PLATFORM_TOKEN:        ${{ env.PLATFORM_TOKEN }}
+          CLIENT_IP:             ${{ secrets.CLIENT_IP }}
+          EC2_API_URL:           http://13.48.55.242:5000
+          EC2_API_SECRET:        ${{ secrets.EC2_API_SECRET }}
         run: python fetch_streams.py
