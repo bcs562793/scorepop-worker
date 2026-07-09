@@ -1,8 +1,5 @@
 name: 📅 ScorePop - Maç Çekme Botu
 
-on:
-  schedule:
-
   workflow_dispatch:
     inputs:
       mode:
